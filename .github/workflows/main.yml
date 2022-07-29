@@ -21,6 +21,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
           
+      - name: Pull files
+        run: |
+          git config --local user.email "murongpig@foxmail.com"
+          git config --local user.name "MuRongPIG"
+          git pull origin main
       - name: Get proxies
         run: python getproxy.py
 
