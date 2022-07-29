@@ -26,13 +26,12 @@ jobs:
           git config --local user.email "murongpig@foxmail.com"
           git config --local user.name "MuRongPIG"
           git pull origin main
+      
       - name: Get proxies
         run: python getproxy.py
 
       - name: Commit files
         run: |
-          git config --local user.email "murongpig@foxmail.com"
-          git config --local user.name "MuRongPIG"
           git add -A
           git commit -m "Update Proxies (`date '+%F %H:%M %Z'`)" -a
           git branch -u origin/main
