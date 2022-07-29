@@ -1,4 +1,4 @@
-name: get proxies
+name: get proxy
 
 on:
   schedule:
