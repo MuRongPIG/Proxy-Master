@@ -65,17 +65,18 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/http.txt',
         'https://openproxy.space/list/http'
     ]}
-        self.proxy_dict = {'socks4':'','socks5':'','http':''}
+        self.proxy_dict = {'socks4':[],'socks5':[],'http':[]}
         pass
 
     def get(self,type):
-        self.proxy_list = []
         for api in self.api[type]:
+            self.proxy_list = []
             try:
                 self.r = requests.get(api,timeout=5)
                 if self.r.status_code == requests.codes.ok :
                     self.proxy_list += re.findall('\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}',self.r.text)
-                    self.proxy_dict[type] = list(set(self.proxy_list))
+                    self.proxy_dict[type] += list(set(self.proxy_list))
+                    print('> Get {} {} ips from {}'.format(len(self.proxy_list),type,api))
             except:
                 pass
         if type == 'socks4':
@@ -95,25 +96,30 @@ class Downloadproxies():
                         pass
                 if self.proxies != '':
                     self.proxy_list += self.proxies.split('\n')
-                self.proxy_list = list(set(self.proxy_list))
-                self.proxy_dict[type] = list(set(self.proxy_list))
+                self.proxy_dict[type] += list(set(self.proxy_list))
             except:
                 pass
         print('> Get {} proxies done'.format(type))
 
     def get_extra(self):
         for q in range(10):
+            self.count = {'http':0,'socks5':0}
             self.day = datetime.date.today() + datetime.timedelta(-q)
             self.r = requests.get('https://checkerproxy.net/api/archive/{}-{}-{}'.format(self.day.year,self.day.month,self.day.day))
             if self.r.text != '[]': 
                 self.json_result = json.loads(self.r.text)
                 for i in self.json_result:
                     if i['type'] == 1 and i['ip'] != '172.23.0.1':
+                        self.count['http'] += 1
                         self.proxy_dict['http'].append(i['addr'])
                     if i['type'] == 2 and i['ip'] != '172.23.0.1':
+                        self.count['http'] += 1
                         self.proxy_dict['http'].append(i['addr'])
                     if i['type'] == 4:
+                        self.count['socks5'] += 1
                         self.proxy_dict['socks5'].append(i['addr'])
+                print('Get {} http proxy ips from {}'.format(self.count['http'],self.r.url))
+                print('Get {} socks5 proxy ips from {}'.format(self.count['socks5'],self.r.url))
         
         self.proxy_dict['socks4'] = list(set(self.proxy_dict['socks4']))
         self.proxy_dict['socks5'] = list(set(self.proxy_dict['socks5']))
@@ -124,12 +130,11 @@ class Downloadproxies():
     def get_all(self):
         self.get('socks4')
         self.get('socks5')
-        print(len(self.proxy_dict['socks5']))
         self.get('http')
         self.get_extra()
-        print(len(self.proxy_dict['socks5']))
 
     def save(self,type):
+        self.proxy_dict[type] = list(set(self.proxy_dict[type]))
         self.out_file = '{}.txt'.format(type)
         f = open(self.out_file,'w')
         for i in self.proxy_dict[type]:
@@ -137,7 +142,7 @@ class Downloadproxies():
                 self.proxy_dict[type].remove(i)
             else:
                 f.write(i + '\n')
-        print("> Have already downloaded proxies list as "+self.out_file)
+        print("> Have already saved {} proxies list as ".format(len(self.proxy_dict[type])) + self.out_file)
 
     def save_all(self):
         self.save('socks4')
