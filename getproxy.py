@@ -102,22 +102,23 @@ class Downloadproxies():
         print('> Get {} proxies done'.format(type))
 
     def get_extra(self):
-        self.yesterday = datetime.date.today() + datetime.timedelta(-1)
-        self.r = requests.get('https://checkerproxy.net/api/archive/{}-{}-{}'.format(self.yesterday.year,self.yesterday.month,self.yesterday.day))
-        if self.r.text != '[]': 
-            self.json_result = json.loads(self.r.text)
-        else:
-            del self.r
-            self.t_d_b_yesterday = datetime.date.today() + datetime.timedelta(-2)
-            self.r = requests.get('https://checkerproxy.net/api/archive/{}-{}-{}'.format(self.t_d_b_yesterday.year,self.t_d_b_yesterday.month,self.yesterdat_d_b_yesterday.day))
-            self.json_result = json.loads(self.r.text)
-        for i in self.json_result:
-            if i['type'] == 1 and i['ip'] != '172.23.0.1':
-                self.proxy_dict['http'].append(i['addr'])
-            if i['type'] == 2 and i['ip'] != '172.23.0.1':
-                self.proxy_dict['http'].append(i['addr'])
-            if i['type'] == 4:
-                self.proxy_dict['socks5'].append(i['addr'])
+        for q in range(10):
+            self.day = datetime.date.today() + datetime.timedelta(-q)
+            self.r = requests.get('https://checkerproxy.net/api/archive/{}-{}-{}'.format(self.day.year,self.day.month,self.day.day))
+            if self.r.text != '[]': 
+                self.json_result = json.loads(self.r.text)
+                for i in self.json_result:
+                    if i['type'] == 1 and i['ip'] != '172.23.0.1':
+                        self.proxy_dict['http'].append(i['addr'])
+                    if i['type'] == 2 and i['ip'] != '172.23.0.1':
+                        self.proxy_dict['http'].append(i['addr'])
+                    if i['type'] == 4:
+                        self.proxy_dict['socks5'].append(i['addr'])
+        
+        self.proxy_dict['socks4'] = list(set(self.proxy_dict['socks4']))
+        self.proxy_dict['socks5'] = list(set(self.proxy_dict['socks5']))
+        self.proxy_dict['http'] = list(set(self.proxy_dict['http']))
+        
         print('> Get extra proxies done')
 
     def get_all(self):
