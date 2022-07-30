@@ -22,7 +22,7 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/RX4096/proxy-list/main/online/socks4.txt',
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks4.txt',
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks4.txt',
-        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks4.txt',
+        #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks4.txt',
         'https://openproxy.space/list/socks4'
         ],
     'socks5': [
@@ -43,7 +43,7 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/manuGMG/proxy-365/main/SOCKS5.txt',
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks5.txt',
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks5.txt',
-        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks5.txt',
+        #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks5.txt',
         'https://openproxy.space/list/socks5',
         'https://spys.me/socks.txt'
         ],
@@ -79,7 +79,7 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/http.txt',
         'https://raw.githubusercontent.com/saisuiu/uiu/main/free.txt',
         'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt',
-        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt'
+        #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt'
     ]}
         self.proxy_dict = {'socks4':[],'socks5':[],'http':[]}
         pass
