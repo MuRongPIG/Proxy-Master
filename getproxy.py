@@ -114,15 +114,19 @@ class Downloadproxies():
         for i in self.json_result:
             if i['type'] == 1 and i['ip'] != '172.23.0.1':
                 self.proxy_dict['http'].append(i['addr'])
-            if i['type'] == 2:
+            if i['type'] == 2 and i['ip'] != '172.23.0.1':
+                self.proxy_dict['http'].append(i['addr'])
+            if i['type'] == 4:
                 self.proxy_dict['socks5'].append(i['addr'])
         print('> Get extra proxies done')
 
     def get_all(self):
         self.get('socks4')
         self.get('socks5')
+        print(len(self.proxy_dict['socks5']))
         self.get('http')
         self.get_extra()
+        print(len(self.proxy_dict['socks5']))
 
     def save(self,type):
         self.out_file = '{}.txt'.format(type)
