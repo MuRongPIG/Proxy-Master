@@ -118,8 +118,8 @@ class Downloadproxies():
                     if i['type'] == 4:
                         self.count['socks5'] += 1
                         self.proxy_dict['socks5'].append(i['addr'])
-                print('Get {} http proxy ips from {}'.format(self.count['http'],self.r.url))
-                print('Get {} socks5 proxy ips from {}'.format(self.count['socks5'],self.r.url))
+                print('> Get {} http proxy ips from {}'.format(self.count['http'],self.r.url))
+                print('> Get {} socks5 proxy ips from {}'.format(self.count['socks5'],self.r.url))
         
         self.proxy_dict['socks4'] = list(set(self.proxy_dict['socks4']))
         self.proxy_dict['socks5'] = list(set(self.proxy_dict['socks5']))
