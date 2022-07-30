@@ -21,7 +21,8 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt',
         'https://raw.githubusercontent.com/RX4096/proxy-list/main/online/socks4.txt',
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks4.txt',
-        'https://openproxy.space/list/socks4'],
+        'https://openproxy.space/list/socks4'
+        ],
     'socks5': [
         "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all&simplified=true",
         "https://www.proxy-list.download/api/v1/get?type=socks5",
@@ -40,7 +41,8 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/manuGMG/proxy-365/main/SOCKS5.txt',
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks5.txt',
         'https://openproxy.space/list/socks5',
-        'https://spys.me/socks.txt'],
+        'https://spys.me/socks.txt'
+        ],
     'http': [
         "https://api.proxyscrape.com/?request=displayproxies&proxytype=http",
         "https://www.proxy-list.download/api/v1/get?type=http",
@@ -63,7 +65,13 @@ class Downloadproxies():
         "https://raw.githubusercontent.com/UserR3X/proxy-list/main/online/http.txt",
         "https://raw.githubusercontent.com/UserR3X/proxy-list/main/online/https.txt",
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/http.txt',
-        'https://openproxy.space/list/http'
+        'https://openproxy.space/list/http',
+        'https://raw.githubusercontent.com/Volodichev/proxy-list/main/http.txt',
+        'https://raw.githubusercontent.com/mertguvencli/http-proxy-list/main/proxy-list/data.txt',
+        'https://raw.githubusercontent.com/hendrikbgr/Free-Proxy-Repo/master/proxy_list.txt',
+        'https://raw.githubusercontent.com/almroot/proxylist/master/list.txt',
+        'https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt',
+        'https://raw.githubusercontent.com/aslisk/proxyhttps/main/https.txt'
     ]}
         self.proxy_dict = {'socks4':[],'socks5':[],'http':[]}
         pass
