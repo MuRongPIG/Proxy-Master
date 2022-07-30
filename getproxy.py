@@ -131,7 +131,7 @@ class Downloadproxies():
                     if i['type'] == 2 and i['ip'] != '172.23.0.1':
                         self.count['http'] += 1
                         self.proxy_dict['http'].append(i['addr'])
-                    if i['type'] == 4:
+                    if i['type'] == 4 and i['ip'] != '172.23.0.1':
                         self.count['socks5'] += 1
                         self.proxy_dict['socks5'].append(i['addr'])
                 print('> Get {} http proxy ips from {}'.format(self.count['http'],self.r.url))
