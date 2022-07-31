@@ -125,15 +125,18 @@ class Downloadproxies():
             if self.r.text != '[]': 
                 self.json_result = json.loads(self.r.text)
                 for i in self.json_result:
-                    if i['type'] == 1 and i['ip'] != '172.23.0.1':
-                        self.count['http'] += 1
-                        self.proxy_dict['http'].append(i['addr'])
-                    if i['type'] == 2 and i['ip'] != '172.23.0.1':
-                        self.count['http'] += 1
-                        self.proxy_dict['http'].append(i['addr'])
-                    if i['type'] == 4 and i['ip'] != '172.23.0.1':
-                        self.count['socks5'] += 1
-                        self.proxy_dict['socks5'].append(i['addr'])
+                    if i['ip'] == '172.23.0.1':
+                        if i['type'] in [1,2] and i['addr'] in self.proxy_dict['http']:
+                            self.proxy_dict['http'].remove(i['addr'])
+                        if i['type'] == 4 and i['addr'] in self.proxy_dict['socks5']:
+                            self.proxy_dict['socks5'].remove(i['addr'])
+                    else:
+                        if i['type'] in [1,2] :
+                            self.count['http'] += 1
+                            self.proxy_dict['http'].append(i['addr'])
+                        if i['type'] == 4 :
+                            self.count['socks5'] += 1
+                            self.proxy_dict['socks5'].append(i['addr'])
                 print('> Get {} http proxy ips from {}'.format(self.count['http'],self.r.url))
                 print('> Get {} socks5 proxy ips from {}'.format(self.count['socks5'],self.r.url))
         
