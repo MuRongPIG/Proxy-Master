@@ -15,7 +15,7 @@ def test(type):
     
     def process(i):
         try:
-            requests.get("https://mrpig.eu.org/test.txt",proxies={"https":f"{type}://{i}"},timeout=30)
+            requests.get("https://mrpig.eu.org/test.txt",proxies={"https":f"{type}://{i}"},timeout=30,)
         except:
             pass
         else:
@@ -24,14 +24,10 @@ def test(type):
 
     for i in data:
         threading.Thread(target=process,args=(i,)).start()
-
-
-    with open("{}_checked.txt".format(type),"r") as m:
-        data_checked=m.read().split("\n")
-        print('> Checked {} {} proxies successfully'.format(len(data_checked),type))
     
 if __name__ == '__main__':
     test('socks4')
     test('socks5')
     test('http')
     test('https')
+    
