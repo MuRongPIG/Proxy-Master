@@ -1,4 +1,7 @@
-import requests,threading,os
+import requests
+import threading
+import os 
+import time
 def test(type):
     if type in ['http','https']:
         with open("http.txt","r") as f:
@@ -15,7 +18,7 @@ def test(type):
     
     def process(i):
         try:
-            requests.get("https://mrpig.eu.org/test.txt",proxies={"https":f"{type}://{i}"},timeout=30,)
+            requests.get("https://icanhazip.com/",proxies={"https":f"{type}://{i}"},timeout=30,)
         except:
             pass
         else:
@@ -24,6 +27,9 @@ def test(type):
 
     for i in data:
         threading.Thread(target=process,args=(i,)).start()
+
+    while threading.active_count() >1:
+        time.sleep(1)
     
 if __name__ == '__main__':
     test('socks4')

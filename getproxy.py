@@ -22,6 +22,7 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/RX4096/proxy-list/main/online/socks4.txt',
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks4.txt',
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks4.txt',
+        'https://proxylist.live/nodes/socks4_1.php?page=1&showall=1',
         #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks4.txt',
         'https://openproxy.space/list/socks4'
         ],
@@ -45,6 +46,7 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks5.txt',
         #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks5.txt',
         'https://openproxy.space/list/socks5',
+        'https://proxylist.live/nodes/socks5_1.php?page=1&showall=1',
         'https://spys.me/socks.txt'
         ],
     'http': [
@@ -62,7 +64,7 @@ class Downloadproxies():
         "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
         "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
         "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt",
-        "https://raw.githubusercontent.com/opsxcq/proxy-list/master/list.txt"
+        "https://raw.githubusercontent.com/opsxcq/proxy-list/master/list.txt",
         "https://proxy-spider.com/api/proxies.example.txt",
         "https://multiproxy.org/txt_all/proxy.txt",
         "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
@@ -70,7 +72,7 @@ class Downloadproxies():
         "https://raw.githubusercontent.com/UserR3X/proxy-list/main/online/https.txt",
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/http.txt',
         'https://openproxy.space/list/http',
-        'https://raw.githubusercontent.com/Volodichev/proxy-list/main/http.txt',
+        'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt',
         'https://raw.githubusercontent.com/mertguvencli/http-proxy-list/main/proxy-list/data.txt',
         'https://raw.githubusercontent.com/hendrikbgr/Free-Proxy-Repo/master/proxy_list.txt',
         'https://raw.githubusercontent.com/almroot/proxylist/master/list.txt',
@@ -79,6 +81,7 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/http.txt',
         'https://raw.githubusercontent.com/saisuiu/uiu/main/free.txt',
         'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt',
+        'https://proxylist.live/nodes/free_1.php?page=1&showall=1'
         #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt'
     ]}
         self.proxy_dict = {'socks4':[],'socks5':[],'http':[]}
