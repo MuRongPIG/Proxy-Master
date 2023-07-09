@@ -1,5 +1,4 @@
 import json
-import time
 import datetime
 import requests
 import re
@@ -23,8 +22,17 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks4.txt',
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks4.txt',
         'https://proxylist.live/nodes/socks4_1.php?page=1&showall=1',
-        #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks4.txt',
-        'https://openproxy.space/list/socks4'
+        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks4.txt',
+        'https://openproxy.space/list/socks4',
+        'https://github.com/hanwayTech/free-proxy-list/blob/main/socks4.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXY_LIST/master/socks4.txt',
+        'https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/socks4.txt',
+        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/socks4.txt'
+        'https://proxyspace.pro/socks4.txt',
+        'https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS4.txt'
+        'https://raw.githubusercontent.com/ObcbO/getproxy/master/socks4.txt'
+        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/socks4.txt'
+        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks4.txt'
         ],
     'socks5': [
         "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all&simplified=true",
@@ -44,16 +52,24 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/manuGMG/proxy-365/main/SOCKS5.txt',
         'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks5.txt',
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks5.txt',
-        #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks5.txt',
+        'https://github.com/hanwayTech/free-proxy-list/blob/main/socks5.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXY_LIST/master/socks5.txt',
+        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks5.txt',
         'https://openproxy.space/list/socks5',
         'https://proxylist.live/nodes/socks5_1.php?page=1&showall=1',
-        'https://spys.me/socks.txt'
+        'https://spys.me/socks.txt',
+        'https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/socks5.txt',
+        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/socks5.txt',
+        'https://proxyspace.pro/socks5.txt',
+        'https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt',
+        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks5.txt',
         ],
     'http': [
         "https://api.proxyscrape.com/?request=displayproxies&proxytype=http",
         "https://www.proxy-list.download/api/v1/get?type=http",
+        'https://www.proxy-list.download/api/v1/get?type=https'
         "https://www.proxyscan.io/download?type=http",
-        "http://spys.me/proxy.txt",
+        "https://spys.me/proxy.txt",
         "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
         "https://api.openproxylist.xyz/http.txt",
         "https://raw.githubusercontent.com/shiftytr/proxy-list/master/proxy.txt",
@@ -80,48 +96,87 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/aslisk/proxyhttps/main/https.txt',
         'https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/http.txt',
         'https://raw.githubusercontent.com/saisuiu/uiu/main/free.txt',
-        'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt',
-        'https://proxylist.live/nodes/free_1.php?page=1&showall=1'
-        #'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt'
+        'https://proxylist.live/nodes/free_1.php?page=1&showall=1',
+        'https://raw.githubusercontent.com/hanwayTech/free-proxy-list/main/http.txt',
+        'https://raw.githubusercontent.com/hanwayTech/free-proxy-list/main/https.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXY_LIST/master/http.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXY_LIST/master/https.txt',
+        'https://raw.githubusercontent.com/rx443/proxy-list/online/all.txt',
+        'https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/http.txt',
+        'https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/https.txt',
+        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/http.txt',
+        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt',
+        'https://raw.githubusercontent.com/yemixzy/proxy-list/main/proxy-list/data.txt',
+        'https://raw.githubusercontent.com/andigwandi/free-proxy/main/proxy_list.txt'
+        'https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/HTTP.txt'
+        'https://raw.githubusercontent.com/ObcbO/getproxy/master/http.txt'
+        'https://raw.githubusercontent.com/ObcbO/getproxy/master/https.txt'
+        'https://rootjazz.com/proxies/proxies.txt',
+        'https://sheesh.rip/http.txt',
+        'https://proxyspace.pro/http.txt',
+        'https://proxyspace.pro/https.txt'
+        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt'
+
+    
     ]}
         self.proxy_dict = {'socks4':[],'socks5':[],'http':[]}
         pass
 
-    def get(self,type):
-        for api in self.api[type]:
-            self.proxy_list = []
-            try:
-                self.r = requests.get(api,timeout=5)
-                if self.r.status_code == requests.codes.ok :
-                    self.proxy_list += re.findall('\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}',self.r.text)
-                    self.proxy_dict[type] += list(set(self.proxy_list))
-                    print('> Get {} {} ips from {}'.format(len(self.proxy_list),type,api))
-            except:
-                pass
-        if type == 'socks4':
-            try:
-                r = requests.get("https://www.socks-proxy.net/",timeout=5)
-                self.part = str(r.text)
-                self.part = self.part.split("<tbody>")
-                self.part = self.part[1].split("</tbody>")
-                self.part = self.part[0].split("<tr><td>")
-                self.proxies = ""
-                for proxy in self.part:
-                    proxy = proxy.split("</td><td>")
-                    try:
-                        if self.proxies != '':
-                            self.proxies=self.proxies + proxy[0] + ":" + proxy[1] + "\n"
-                    except:
-                        pass
-                if self.proxies != '':
-                    self.proxy_list += self.proxies.split('\n')
-                self.proxy_dict[type] += list(set(self.proxy_list))
-            except:
-                pass
+    def get_special1(self):
+        proxy_list = []
+        try:
+            r = requests.get("https://www.socks-proxy.net/",timeout=5)
+            part = str(r.text)
+            part = part.split("<tbody>")
+            part = part[1].split("</tbody>")
+            part = part[0].split("<tr><td>")
+            proxies = ""
+            for proxy in part:
+                proxy = proxy.split("</td><td>")
+                try:
+                    if proxies != '':
+                        proxies = proxies + proxy[0] + ":" + proxy[1] + "\n"
+                        if proxies != '':
+                            proxy_list += proxies.split('\n')
+                except:
+                    pass
+                
+            return proxy_list
+        except:
+            return []
+
+    def get_special2(self):
+        for i in range(json.loads(requests.get('https://proxylist.geonode.com/api/proxy-summary').text)["summary"]['proxiesOnline'] // 100):
+            proxies = json.loads(requests.get('https://proxylist.geonode.com/api/proxy-list?limit=100&page={}&sort_by=lastChecked&sort_type=desc'.format(i)).text)
+            for p in proxies['data']:
+                if p['protocols'][0] == 'https':
+                    protocol = 'http'
+                else:
+                    protocol = p['protocols'][0]
+                self.proxy_dict[protocol] .append('{}:{}'.format(p['ip'],p['port']))
+        return
+
+    def get(self):
+        self.proxy_dict['socks4'] += self.get_special1()
+        #self.get_special2()
+        self.get_extra()
+        
+        for type in ['socks4','socks5','http']:
+            for api in self.api[type]:
+                self.proxy_list = []
+                try:
+                    self.r = requests.get(api,timeout=5)
+                    if self.r.status_code == requests.codes.ok :
+                        self.proxy_list += re.findall('\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}',self.r.text)
+                        self.proxy_dict[type] += list(set(self.proxy_list))
+                        print('> Get {} {} ips from {}'.format(len(self.proxy_list),type,api))
+                except:
+                    pass
+
         print('> Get {} proxies done'.format(type))
 
     def get_extra(self):
-        for q in range(10):
+        for q in range(20):
             self.count = {'http':0,'socks5':0}
             self.day = datetime.date.today() + datetime.timedelta(-q)
             self.r = requests.get('https://checkerproxy.net/api/archive/{}-{}-{}'.format(self.day.year,self.day.month,self.day.day))
@@ -149,29 +204,19 @@ class Downloadproxies():
         
         print('> Get extra proxies done')
 
-    def get_all(self):
-        self.get('socks4')
-        self.get('socks5')
-        self.get('http')
-        self.get_extra()
-
-    def save(self,type):
-        self.proxy_dict[type] = list(set(self.proxy_dict[type]))
-        self.out_file = '{}.txt'.format(type)
-        f = open(self.out_file,'w')
-        for i in self.proxy_dict[type]:
-            if '#' in i or i == '\n':
-                self.proxy_dict[type].remove(i)
-            else:
-                f.write(i + '\n')
-        print("> Have already saved {} proxies list as ".format(len(self.proxy_dict[type])) + self.out_file)
-
-    def save_all(self):
-        self.save('socks4')
-        self.save('socks5')
-        self.save('http')
+    def save(self):
+        for type in ['socks4','socks5','http']:
+            self.proxy_dict[type] = list(set(self.proxy_dict[type]))
+            self.out_file = '/home/ubuntu/data/{}.txt'.format(type)
+            f = open(self.out_file,'w')
+            for i in self.proxy_dict[type]:
+                if '#' in i or i == '\n':
+                    self.proxy_dict[type].remove(i)
+                else:
+                    f.write(i + '\n')
+            print("> Have already saved {} proxies list as ".format(len(self.proxy_dict[type])) + self.out_file)
 
 if __name__ == '__main__':
     d = Downloadproxies()
-    d.get_all()
-    d.save_all()
+    d.get()
+    d.save()
