@@ -27,12 +27,13 @@ class Downloadproxies():
         'https://github.com/hanwayTech/free-proxy-list/blob/main/socks4.txt',
         'https://raw.githubusercontent.com/Zaeem20/FREE_PROXY_LIST/master/socks4.txt',
         'https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/socks4.txt',
-        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/socks4.txt'
+        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/socks4.txt',
         'https://proxyspace.pro/socks4.txt',
-        'https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS4.txt'
-        'https://raw.githubusercontent.com/ObcbO/getproxy/master/socks4.txt'
-        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/socks4.txt'
-        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks4.txt'
+        'https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS4.txt',
+        'https://raw.githubusercontent.com/ObcbO/getproxy/master/socks4.txt',
+        'https://raw.githubusercontent.com/proxylist-to/proxy-list/main/socks4.txt',
+        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks4.txt',
+        'https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks4.txt'
         ],
     'socks5': [
         "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all&simplified=true",
@@ -63,6 +64,7 @@ class Downloadproxies():
         'https://proxyspace.pro/socks5.txt',
         'https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt',
         'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks5.txt',
+        'https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt'
         ],
     'http': [
         "https://api.proxyscrape.com/?request=displayproxies&proxytype=http",
@@ -114,8 +116,10 @@ class Downloadproxies():
         'https://rootjazz.com/proxies/proxies.txt',
         'https://sheesh.rip/http.txt',
         'https://proxyspace.pro/http.txt',
-        'https://proxyspace.pro/https.txt'
-        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt'
+        'https://proxyspace.pro/https.txt',
+        'https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt',
+        'https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt',
+        'https://raw.githubusercontent.com/zloi-user/hideip.me/main/https.txt'
 
     
     ]}
@@ -159,6 +163,7 @@ class Downloadproxies():
     def get(self):
         self.proxy_dict['socks4'] += self.get_special1()
         #self.get_special2()
+
         self.get_extra()
         
         for type in ['socks4','socks5','http']:
@@ -203,7 +208,7 @@ class Downloadproxies():
         self.proxy_dict['http'] = list(set(self.proxy_dict['http']))
         
         print('> Get extra proxies done')
-
+    
     def save(self):
         for type in ['socks4','socks5','http']:
             self.proxy_dict[type] = list(set(self.proxy_dict[type]))
