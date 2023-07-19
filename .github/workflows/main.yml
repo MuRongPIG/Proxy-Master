@@ -28,7 +28,9 @@ jobs:
           git pull origin main
       
       - name: Get proxies
-        run: python getproxy.py
+        run: |
+          python getproxy.py
+          python checkproxy.py
 
       - name: Commit files
         run: |
