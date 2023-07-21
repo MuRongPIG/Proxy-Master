@@ -27,18 +27,6 @@ jobs:
         run: |
           git config --local user.email "murongpig@foxmail.com"
           git config --local user.name "MuRongPIG"
-          git pull origin main
-          git reset --hard HEAD~
-          
-      - name: Push changes
-        uses: ad-m/github-push-action@v0.6.0
-        with:
-          github_token: ${{ secrets.TOKEN_GITHUB }}
-          branch: main 
-          force: true
-          
-      - name: Commit files
-        run: |
           git add -A
           git commit -m "Update Proxies (`date '+%F %H:%M %Z'`)" -a
           git branch -u origin/main
@@ -48,4 +36,4 @@ jobs:
         with:
           github_token: ${{ secrets.TOKEN_GITHUB }}
           branch: main 
-          force: true
+          force_with_lease: true
