@@ -27,6 +27,7 @@ jobs:
         run: |
           git config --local user.email "murongpig@foxmail.com"
           git config --local user.name "MuRongPIG"
+          git checkout FETCH_HEAD
           git reset --hard HEAD^
           git push origin master -f
 
