@@ -32,6 +32,8 @@ jobs:
 
       - name: Commit files
         run: |
+          git reset --hard HEAD^
+          git push origin master -f
           git add -A
           git commit -m "Update Proxies (`date '+%F %H:%M %Z'`)" -a
           git branch -u origin/main

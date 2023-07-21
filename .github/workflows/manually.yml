@@ -27,6 +27,9 @@ jobs:
         run: |
           git config --local user.email "murongpig@foxmail.com"
           git config --local user.name "MuRongPIG"
+          git reset --hard HEAD^
+          git push origin master -f
+
           git add -A
           git commit -m "Update Proxies (`date '+%F %H:%M %Z'`)" -a
           git branch -u origin/main
