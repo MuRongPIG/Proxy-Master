@@ -87,10 +87,9 @@ class Downloadproxies():
         'https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/https.txt',
         'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt',
         'https://raw.githubusercontent.com/yemixzy/proxy-list/main/proxy-list/data.txt',
-        'https://raw.githubusercontent.com/andigwandi/free-proxy/main/proxy_list.txt'
-        'https://raw.githubusercontent.com/ObcbO/getproxy/master/http.txt'
-        'https://raw.githubusercontent.com/ObcbO/getproxy/master/https.txt'
-        'https://rootjazz.com/proxies/proxies.txt',
+        'https://raw.githubusercontent.com/andigwandi/free-proxy/main/proxy_list.txt',
+        'https://raw.githubusercontent.com/ObcbO/getproxy/master/http.txt',
+        'https://raw.githubusercontent.com/ObcbO/getproxy/master/https.txt',
         'https://sheesh.rip/http.txt',
         'https://proxyspace.pro/http.txt',
         'https://proxyspace.pro/https.txt'
