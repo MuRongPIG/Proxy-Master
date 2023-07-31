@@ -161,7 +161,7 @@ class Downloadproxies():
             if self.r.text != '[]': 
                 self.json_result = json.loads(self.r.text)
                 for i in self.json_result:
-                    if i['ip'] == '172.23.0.1':
+                    if re.match('172.[0-9][0-9].0.1',i['ip']):
                         if i['type'] in [1,2] and i['addr'] in self.proxy_dict['http']:
                             self.proxy_dict['http'].remove(i['addr'])
                         if i['type'] == 4 and i['addr'] in self.proxy_dict['socks5']:
