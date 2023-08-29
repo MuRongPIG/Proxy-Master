@@ -129,3 +129,7 @@ dmypy.json
 .pyre/
 
 /proxy-scraper-checker
+/util
+/test
+/.vscode
+
