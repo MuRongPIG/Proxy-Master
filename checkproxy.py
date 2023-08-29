@@ -12,14 +12,15 @@ def test(type):
         with open("{}.txt".format(type), "r") as f:
             data = f.read().split("\n")
     print('> {} {} proxies will be checked'.format(len(data), type))
-    
-    try:
-        if platform.system() == 'Windows':
-            os.system('del {}_checked.txt'.format(type))
-        else:  # Assuming it's Linux
-            os.system('rm {}_checked.txt'.format(type))
-    except:
-        pass
+
+    if os.path.exists('{}_checked.txt'.format(type)):
+        try:
+            if platform.system() == 'Windows':
+                os.system('del {}_checked.txt'.format(type))
+            else:  # Assuming it's Linux
+                os.system('rm {}_checked.txt'.format(type))
+        except:
+            pass
     
     def process(i):
         try:
