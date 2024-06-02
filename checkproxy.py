@@ -1,42 +1,59 @@
-import requests
-import threading
-import os 
-import time
+import os
 import platform
+import threading
+import time
 
-def test(type):
-    if type in ['http', 'https']:
-        with open("http.txt", "r") as f:
-            data = f.read().split("\n")
+def test(proxy_type):
+    file_name = f"{proxy_type}.txt"
+    if os.path.exists(file_name):
+        with open(file_name, "r") as f:
+            proxies = f.read().splitlines()
     else:
-        with open("{}.txt".format(type), "r") as f:
-            data = f.read().split("\n")
-    print('> {} {} proxies will be checked'.format(len(data), type))
+        print(f"No file named {file_name} found")
+        return
 
-    if os.path.exists('{}_checked.txt'.format(type)):
-        try:
-            if platform.system() == 'Windows':
-                os.system('del {}_checked.txt'.format(type))
-            else:  # Assuming it's Linux
-                os.system('rm {}_checked.txt'.format(type))
-        except:
-            pass
-    
-    def process(i):
-        try:
-            requests.get("https://icanhazip.com/", proxies={type: f"{type}://{i}"}, timeout=30,)
-        except:
-            pass
+    print(f'> {len(proxies)} {proxy_type} proxies will be checked')
+
+    checked_file = f"{proxy_type}_checked.txt"
+    if os.path.exists(checked_file):
+        os.remove(checked_file)
+
+    def ping_google(proxy):
+        ip_port = proxy.split(':')
+        if len(ip_port) != 2:
+            return False
+        ip, port = ip_port
+        cmd = None
+
+        if platform.system() == "Windows":
+            cmd = f'ping -n 1 -w 1000 {ip}'
         else:
-            with open("{}_checked.txt".format(type), "a+") as f:
-                f.write(i + "\n")
+            cmd = f'ping -c 1 -W 1 {ip}'
 
-    for i in data:
-        threading.Thread(target=process, args=(i,)).start()
+        response = os.system(cmd)
+        return response == 0
 
-    while threading.active_count() > 1:
-        time.sleep(1)
-    
+    def process(proxy):
+        failure_count = 0
+        for _ in range(2):  # Try twice
+            if ping_google(proxy):
+                with open(checked_file, "a") as f:
+                    f.write(proxy + "\n")
+                break
+            else:
+                failure_count += 1
+            if failure_count >= 2:
+                break
+
+    threads = []
+    for proxy in proxies:
+        thread = threading.Thread(target=process, args=(proxy,))
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
+
 if __name__ == '__main__':
     test('socks4')
     test('socks5')
