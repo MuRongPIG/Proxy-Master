@@ -4,6 +4,7 @@ import queue
 import requests
 import typing
 import time
+import sys
 
 
 class Proxy:
@@ -56,11 +57,15 @@ def load_proxies(types=["http", "socks4", "socks5"]):
 
 
 def main(types=["http", "socks4", "socks5"]):
-    workers = input("Worker number: (32)")
+    if len(sys.argv) > 1:
+        workers = sys.argv[1]
+    else:
+        workers = input("Worker number: (32)")
     if not workers or not workers.isdigit():
         workers = 32
     else:
         workers = int(workers)
+    rich.print(f"[green]I[/green]: Worker number: {workers}")
     rich.print("[green]I[/green]: Loading proxies")
     proxies = load_proxies(types=types)
     proxy_queue = queue.Queue()
