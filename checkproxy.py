@@ -5,6 +5,7 @@ import requests
 import typing
 import time
 import sys
+import random
 
 
 class Proxy:
@@ -14,6 +15,17 @@ class Proxy:
         self.ip = address.split(":")[0]
         self.port = int(address.split(":")[1])
         self.link = f"{protocol}://{address}"
+
+
+def check_socks() -> bool:
+    try:
+        requests.get(
+            "https://httpbin.org/ip",
+            proxies={"https": "socks5://justatest.com"},
+            timeout=1,
+        )
+    except Exception as e:
+        return e.args[0] != "Missing dependencies for SOCKS support."
 
 
 def check_proxy(proxy: Proxy) -> bool:
@@ -66,8 +78,15 @@ def main(types=["http", "socks4", "socks5"]):
     else:
         workers = int(workers)
     rich.print(f"[green]I[/green]: Worker number: {workers}")
+    if not check_socks():
+        rich.print(
+            f"[yellow]W[/yellow]: Missing dependencies for SOCKS support. Please run `pip install pysocks`."
+        )
+        if input("Go on without socks proxies check?(y/N): ") != "y":
+            exit(1)
     rich.print("[green]I[/green]: Loading proxies")
     proxies = load_proxies(types=types)
+    random.shuffle(proxies)
     proxy_queue = queue.Queue()
     callback_queue = queue.Queue()
     for proxy in proxies:
