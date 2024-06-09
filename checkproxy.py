@@ -7,6 +7,8 @@ import time
 import sys
 import random
 
+REPORT_INTERVAL = 10
+
 
 class Proxy:
     def __init__(self, protocol: str, address: str) -> None:
@@ -78,6 +80,7 @@ def main(types=["http", "socks4", "socks5"]):
     else:
         workers = int(workers)
     rich.print(f"[green]I[/green]: Worker number: {workers}")
+    rich.print(f"[green]I[/green]: Report interval: {REPORT_INTERVAL}")
     if not check_socks():
         rich.print(
             f"[yellow]W[/yellow]: Missing dependencies for SOCKS support. Please run `pip install pysocks`."
@@ -96,12 +99,18 @@ def main(types=["http", "socks4", "socks5"]):
         threading.Thread(
             target=check_worker, args=(proxy_queue, callback_queue)
         ).start()
+    rich.print("[green]I[/green]: Check started!")
+    last_checked = 0
     while not proxy_queue.empty():
         pending = proxy_queue.qsize()
+        checked = len(proxies) - pending
+        checks_per_sec = (checked - last_checked) / REPORT_INTERVAL
+        eta_secs = pending / checks_per_sec
+        time.sleep(REPORT_INTERVAL)
         rich.print(
-            f"[green]I[/green]: Pending checks: {pending} Usable proxies: [green]{callback_queue.qsize()}[/green]/[red]{len(proxies)-pending}[/red]"
+            f"[green]I[/green]: Pending checks: {pending} Usable proxies: [green]{callback_queue.qsize()}[/green]/[red]{checked}[/red] ETA: [bold][cyan]{round(eta_secs//60)}[/cyan][/bold]m [bold][cyan]{round(eta_secs%60)}[/cyan][/bold]s"
         )
-        time.sleep(10)
+        last_checked = checked
     rich.print(
         f"[green]I[/green]: Pending checks: 0 Usable proxies: [green]{callback_queue.qsize()}[/green]/[red]{len(proxies)}[/red]"
     )
