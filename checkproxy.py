@@ -1,4 +1,3 @@
-import rich
 import threading
 import queue
 import requests
@@ -7,8 +6,15 @@ import time
 import sys
 import random
 
-REPORT_INTERVAL = 10
+try:
+    import rich
+    import rich.progress
+    import rich.progress_bar
+except ImportError:
+    print("This proxy checker requires the rich library to work.\nTry pip3 install rich .")
+    exit(1)
 
+CHECK_TIMEOUT_SECONDS = 5
 
 class Proxy:
     def __init__(self, protocol: str, address: str) -> None:
@@ -24,11 +30,10 @@ def check_socks() -> bool:
         requests.get(
             "https://httpbin.org/ip",
             proxies={"https": "socks5://justatest.com"},
-            timeout=1,
+            timeout=CHECK_TIMEOUT_SECONDS,
         )
     except Exception as e:
         return e.args[0] != "Missing dependencies for SOCKS support."
-
 
 def check_proxy(proxy: Proxy) -> bool:
     try:
@@ -70,17 +75,9 @@ def load_proxies(types=["http", "socks4", "socks5"]):
     return proxies
 
 
-def main(types=["http", "socks4", "socks5"]):
-    if len(sys.argv) > 1:
-        workers = sys.argv[1]
-    else:
-        workers = input("Worker number: (32)")
-    if not workers or not workers.isdigit():
-        workers = 32
-    else:
-        workers = int(workers)
+def main(workers: int, types=["http", "socks4", "socks5"]):
     rich.print(f"[green]I[/green]: Worker number: {workers}")
-    rich.print(f"[green]I[/green]: Report interval: {REPORT_INTERVAL}")
+    rich.print(f"[green]I[/green]: Check timeout: {CHECK_TIMEOUT_SECONDS}s")
     if not check_socks():
         rich.print(
             f"[yellow]W[/yellow]: Missing dependencies for SOCKS support. Please run `pip install pysocks`."
@@ -101,23 +98,30 @@ def main(types=["http", "socks4", "socks5"]):
         ).start()
     rich.print("[green]I[/green]: Check started!")
     last_checked = 0
-    while not proxy_queue.empty():
-        pending = proxy_queue.qsize()
-        checked = len(proxies) - pending
-        checks_per_sec = (checked - last_checked) / REPORT_INTERVAL
-        eta_secs = pending / checks_per_sec
-        time.sleep(REPORT_INTERVAL)
-        rich.print(
-            f"[green]I[/green]: Pending checks: {pending} Usable proxies: [green]{callback_queue.qsize()}[/green]/[red]{checked}[/red] ETA: [bold][cyan]{round(eta_secs//60)}[/cyan][/bold]m [bold][cyan]{round(eta_secs%60)}[/cyan][/bold]s"
-        )
-        last_checked = checked
-    rich.print(
-        f"[green]I[/green]: Pending checks: 0 Usable proxies: [green]{callback_queue.qsize()}[/green]/[red]{len(proxies)}[/red]"
-    )
-    rich.print(f"[green]I[/green]: Writing proxies to x_checked.txt")
+    with rich.progress.Progress(
+        rich.progress.TextColumn("[green]I[/green]: "),
+        rich.progress.SpinnerColumn(),
+        rich.progress.TextColumn("[progress.description]{task.description}"),
+        rich.progress.BarColumn(),
+        rich.progress.TaskProgressColumn(),
+        rich.progress.TextColumn("  "),
+        rich.progress.TimeElapsedColumn(),
+        rich.progress.TextColumn(":"),
+        rich.progress.TimeRemainingColumn(),
+        rich.progress.MofNCompleteColumn()
+    ) as progress:
+        task = progress.add_task("Checking...", total=len(proxies))
+        while not proxy_queue.empty():
+            pending = proxy_queue.qsize()
+            checked = len(proxies) - pending
+            checked_this_loop = checked - last_checked
+            last_checked = checked
+            progress.update(task, advance=checked_this_loop)
+            time.sleep(0.5)
     checked_proxies = []
     while not callback_queue.empty():
         checked_proxies.append(callback_queue.get())
+    rich.print(f"[green]I[/green]: Writing {len(checked_proxies)} proxies to x_checked.txt")
     results = {}
     for proxy in checked_proxies:
         proxy: Proxy
@@ -134,4 +138,14 @@ def main(types=["http", "socks4", "socks5"]):
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        workers = sys.argv[1]
+    else:
+        workers = input("Worker number: (32)")
+    if not workers or not workers.isdigit():
+        workers = 32
+    else:
+        workers = int(workers)
+    if workers >= 4096:
+        rich.print(f"[yellow]W[/yellow]: It is not recommended to use more than 4096 workers.")
+    main(workers)
