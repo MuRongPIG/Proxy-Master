@@ -20,6 +20,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
           pip install rich
+          pip install pysocks
  
       - name: Get proxies
         run: |
