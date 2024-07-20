@@ -2,7 +2,7 @@ name: get proxy
 
 on:
   schedule:
-  - cron: '*/60 * * * *'
+  - cron: '*/180 * * * *'
 
 jobs:
   build:
