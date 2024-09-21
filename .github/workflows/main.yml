@@ -31,7 +31,7 @@ jobs:
       - name: Get proxies
         run: |
           python getproxy.py
-          python checkproxy.py
+          python checkproxy.py 256
 
       - name: Commit files
         run: |
