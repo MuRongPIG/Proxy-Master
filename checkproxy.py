@@ -14,7 +14,7 @@ except ImportError:
     print("This proxy checker requires the rich library to work.\nTry pip3 install rich .")
     exit(1)
 
-CHECK_TIMEOUT_SECONDS = 5
+CHECK_TIMEOUT_SECONDS = 15
 
 class Proxy:
     def __init__(self, protocol: str, address: str) -> None:
