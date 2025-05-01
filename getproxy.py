@@ -177,16 +177,20 @@ class Downloadproxies():
                 self.r = requests.get('https://api.checkerproxy.net/v1/landing/archive/{}-{}-{}'.format(self.day.year,self.day.month,self.day.day))
                 if self.r.text != '[]': 
                     self.json_result = json.loads(self.r.text)
-                    for i in self.json_result['data']["proxyList"]:
-                        self.proxy_dict['socks5'].append(i)
-                        self.proxy_dict['http'].append(i)
-                print('> Get {} proxy ips from checkerproxy.net {}-{}-{}'.format(len(self.json_result['data']["proxyList"]),self.day.year,self.day.month,self.day.day))
+                    if type(self.json_result['data']["proxyList"]) == list:
+                        for i in self.json_result['data']["proxyList"]:
+                            self.proxy_dict['socks5'].append(i)
+                            self.proxy_dict['http'].append(i)
+                    elif type(self.json_result['data']["proxyList"]) == dict:
+                        for i in self.json_result['data']["proxyList"].values:
+                            self.proxy_dict['socks5'].append(i)
+                            self.proxy_dict['http'].append(i)
 
+                print('> Get {} proxy ips from checkerproxy.net {}-{}-{}'.format(len(self.json_result['data']["proxyList"]),self.day.year,self.day.month,self.day.day))
             except:pass
         self.proxy_dict['socks4'] = list(set(self.proxy_dict['socks4']))
         self.proxy_dict['socks5'] = list(set(self.proxy_dict['socks5']))
         self.proxy_dict['http'] = list(set(self.proxy_dict['http']))
-        
         print('> Get extra proxies done')
 
     def save(self):
