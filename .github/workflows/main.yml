@@ -1,7 +1,7 @@
 name: get proxy
 
 on:
-  workflow_dispatch:        # manual runs
+  workflow_dispatch:
   schedule:
     - cron: "0 */8 * * *"   # every 8 hours
 
@@ -13,44 +13,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  collect:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
 
       - name: Setup Python
         uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
+        with: { python-version: "3.10" }
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # you said requirements.txt is updated
           pip install -r requirements.txt
 
       - name: Get proxies
         run: python getproxy.py
 
-      - name: Benchmark proxies
-        run: python proxy_benchmark.py
-
       - name: Commit changes if any
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # stage expected outputs
-          git add http.txt socks4.txt socks5.txt ProxyList.csv Output/ 2>/dev/null || true
-          # keep backward compatibility with older filename, if present
+          git add http.txt socks4.txt socks5.txt ProxyList.csv 2>/dev/null || true
           git add TestProxySheet.csv 2>/dev/null || true
-          # any *_checked.txt files from benchmarks
-          git add *_checked.txt 2>/dev/null || true
-
-          git diff --cached --quiet || git commit -m "Update proxies + benchmark ($(date '+%F %H:%M %Z'))"
+          git diff --cached --quiet || git commit -m "Update proxies ($(date '+%F %H:%M %Z'))"
 
       - name: Sync branch before push
         run: |
