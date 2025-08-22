@@ -1,4 +1,4 @@
-name: benchmark proxies
+name: Benchmark Proxies
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       workers:
         description: "Number of concurrent threads"
         required: false
-        default: "256"
+        default: "512"
   schedule:
     - cron: "15 */8 * * *"  # staggered from collection
 
