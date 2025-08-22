@@ -3,6 +3,7 @@ requests>=2.31.0
 aiohttp>=3.8.0
 asyncio
 tqdm>=4.65.0
+aiohttp-socks>=0.8.0
 
 # Additional dependencies for enhanced functionality
 httpx>=0.24.0
