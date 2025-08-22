@@ -1,384 +1,514 @@
+#!/usr/bin/env python3
+# Fast proxy benchmark with per-stage & total timing (Windows-friendly)
+# - Keeps multi-protocol entries (no cross-protocol dedupe)
+# - Stage 0: TCP handshake prefilter (very fast)
+# - Stage 1: short 2 MB throughput test (latency, MB/s, current score)
+# - Rolling history → long-term score, response rate, response avg
+# - All artifacts saved under Output/
+# - Prints timing for each stage and total
+# - MBProxies.txt: IP:port lines sorted by Current Score (desc), threshold + minimum count
+
+import os
 import sys
-if sys.platform.startswith("win"):
-    import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+import csv
+import re
+import ipaddress
+import random
+import asyncio
+from time import perf_counter, time
+from collections import defaultdict, deque
+from typing import Optional, Tuple, List
 
 import aiohttp
-import asyncio
-import csv
-import os
-from time import perf_counter, time
 from tqdm.asyncio import tqdm
-from collections import defaultdict, deque
 
-# SETTINGS - Updated to use getproxy.py output files
-PROXY_FILE_HTTP     = "http.txt"
-PROXY_FILE_SOCKS5   = "socks5.txt"
-PROXY_FILE_SOCKS4   = "socks4.txt"
-OUTPUT_DIR          = "Output"
-CSV_FILE            = os.path.join(OUTPUT_DIR, "proxy_benchmark_results.csv")
-HISTORY_FILE        = os.path.join(OUTPUT_DIR, "proxy_history.csv")
-MB_PROXIES_FILE     = os.path.join(OUTPUT_DIR, "MBProxies.txt")
+try:
+    from aiohttp_socks import ProxyConnector  # pip install aiohttp-socks
+except ImportError as e:
+    raise SystemExit(
+        "Missing dependency: aiohttp-socks.\n"
+        "Install with: pip install aiohttp-socks"
+    ) from e
 
-TEST_URL            = "http://ipv4.download.thinkbroadband.com/100MB.zip"
-CHUNK_RANGE         = "bytes=0-10485759"  # first 10 MB
-TIMEOUT             = 10                  # seconds
-CONCURRENT_LIMIT    = 512                 # max simultaneous tasks
-HISTORY_MAX_RUNS    = 10                  # keep last N runs per proxy
-MIN_TESTS_FOR_FAIL  = 3                   # threshold to consider continuous failures
+# ===================== WINDOWS OPTIONS =====================
+USE_SELECTOR_ON_WINDOWS = False
+SUPPRESS_WIN_RESET_TRACEBACKS = True
 
-# PERFORMANCE CUTOFF SETTINGS
-MIN_SCORE_THRESHOLD = 0.5                 # Minimum score to be considered "good"
-MIN_RESPONSE_RATE   = 1.0                # Minimum response rate percentage
-MIN_PROXIES_COUNT   = 75                  # Minimum number of proxies to include
+if sys.platform.startswith("win") and USE_SELECTOR_ON_WINDOWS:
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
 
-# PRE-SCREENING SETTINGS
-PRE_SCREEN_URL      = "http://httpbin.org/ip"  # Lightweight test URL
-PRE_SCREEN_TIMEOUT  = 5                   # Quick timeout for pre-screening
-PRE_SCREEN_CONCURRENT = 512               # Concurrent limit for pre-screening
+# ===================== FILES & OUTPUT =====================
+INPUT_HTTP   = "http.txt"
+INPUT_SOCKS5 = "socks5.txt"
+INPUT_SOCKS4 = "socks4.txt"
 
-# GLOBAL RESULTS
-good, bad = [], []
-sem = asyncio.Semaphore(CONCURRENT_LIMIT)
-pre_screen_sem = asyncio.Semaphore(PRE_SCREEN_CONCURRENT)
+OUTPUT_DIR    = "Output"
+CSV_FILE      = os.path.join(OUTPUT_DIR, "proxy_benchmark_results.csv")
+HISTORY_FILE  = os.path.join(OUTPUT_DIR, "proxy_history.csv")
+MBPROXIES_TXT = os.path.join(OUTPUT_DIR, "MBProxies.txt")
 
-def ensure_output_directory():
-    """Create the Output directory if it doesn't exist."""
+# ===================== MB LIST CONTROLS (you can tweak) =====================
+MIN_MB_SCORE_THRESHOLD = 0.25   # only proxies with Current Score >= this make the list
+MIN_MB_COUNT           = 75     # ensure at least this many lines by topping up with best-remaining
+
+# ===================== SPEED/QUALITY KNOBS =====================
+# Stage 0: very fast TCP prefilter
+TCP_TIMEOUT_S     = 0.8
+TCP_CONCURRENCY   = 1500   # raise if your machine/NAT can handle it
+
+# Stage 1: short throughput test (2 MB range)
+TEST_URL_HTTP     = "http://ipv4.download.thinkbroadband.com/100MB.zip"
+RANGE_HEADER      = "bytes=0-2097151"      # ~2 MB
+DL_CONNECT_TO     = 4
+DL_SOCK_CONNECT   = 4
+DL_SOCK_READ      = 8
+HTTP_CONCURRENCY  = 384
+SOCKS_CONCURRENCY = 256
+
+# Optional early-stop (set to None to test everything after TCP pass)
+EARLY_STOP_GOOD = {
+    "http":   None,      # e.g., 2500 to stop once 2500 HTTP successes found
+    "socks5": None,
+    "socks4": None,
+}
+BATCH_SIZE = 4000
+
+# History aggregation
+HISTORY_MAX_RUNS = 12
+
+# ===================== SAFE IPv4-ONLY PARSER (no auth, no IPv6) =====================
+_SCHEME_RE    = re.compile(r'^(?P<scheme>https?|socks4|socks5)://', re.I)
+_IPPORT_RE    = re.compile(r'^(?P<ip>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d{1,5})$')
+
+def _valid_port_str(port: str) -> bool:
+    try:
+        n = int(port)
+        return 1 <= n <= 65535
+    except:
+        return False
+
+def normalize_proxy_line(line: str, default_scheme: str) -> Optional[Tuple[str, str]]:
+    """
+    Accept only IPv4 'ip:port'. Reject user:pass@..., hostnames, and IPv6.
+    Returns (scheme, 'ip:port') or None.
+    """
+    s = (line or "").strip()
+    if not s:
+        return None
+
+    m = _SCHEME_RE.match(s)
+    scheme = default_scheme.lower()
+    if m:
+        scheme = m.group("scheme").lower()
+        s = s[m.end():]
+
+    # explicitly disallow any auth or hostnames/IPv6
+    if "@" in s:
+        return None
+
+    m2 = _IPPORT_RE.match(s)
+    if not m2:
+        return None
+
+    ip = m2.group("ip")
+    port = m2.group("port")
+
+    # validate IPv4 + public/global (skip private/loopback/etc.)
+    try:
+        ipaddr = ipaddress.IPv4Address(ip)
+        if not ipaddr.is_global:
+            return None
+    except Exception:
+        return None
+
+    if not _valid_port_str(port):
+        return None
+
+    return scheme, f"{ip}:{port}"
+
+def extract_host_port(authority: str) -> Optional[Tuple[str, int]]:
+    """ip:port → (ip, port)"""
+    try:
+        ip, port_str = authority.rsplit(":", 1)
+        return ip, int(port_str)
+    except Exception:
+        return None
+
+# ===================== I/O HELPERS =====================
+def ensure_output_dir():
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
-        print(f"Created output directory: {OUTPUT_DIR}")
 
-async def pre_screen_proxy(session, proxy: str, scheme: str) -> tuple:
-    """Quick connectivity test to filter out dead proxies before performance testing."""
-    proxy_url = f"{scheme}://{proxy}"
+def load_lines(path: str) -> List[str]:
     try:
-        async with pre_screen_sem:
-            timeout = aiohttp.ClientTimeout(total=PRE_SCREEN_TIMEOUT)
-            async with session.get(PRE_SCREEN_URL, proxy=proxy_url, timeout=timeout) as resp:
-                if resp.status == 200:
-                    return proxy, scheme, True
-                else:
-                    return proxy, scheme, False
-    except Exception:
-        return proxy, scheme, False
-
-async def pre_screen_proxies(proxies: list, scheme: str) -> list:
-    """Pre-screen proxies to filter out dead ones before performance testing."""
-    print(f"Pre-screening {len(proxies)} {scheme.upper()} proxies...")
-    
-    connector = aiohttp.TCPConnector(ssl=False, limit=None)
-    timeout = aiohttp.ClientTimeout(total=PRE_SCREEN_TIMEOUT)
-    
-    responsive_proxies = []
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        tasks = [pre_screen_proxy(session, p, scheme) for p in proxies]
-        
-        for future in tqdm(asyncio.as_completed(tasks),
-                           total=len(tasks),
-                           desc=f"Pre-screening {scheme.upper()}",
-                           unit="proxy"):
-            proxy, proxy_scheme, is_responsive = await future
-            if is_responsive:
-                responsive_proxies.append(proxy)
-    
-    print(f"Pre-screening complete: {len(responsive_proxies)}/{len(proxies)} {scheme.upper()} proxies are responsive")
-    return responsive_proxies
-
-async def try_proxy(session, proxy: str, scheme: str) -> tuple:
-    proxy_url = f"{scheme}://{proxy}"
-    headers   = {"Range": CHUNK_RANGE}
-    try:
-        async with sem:
-            start = perf_counter()
-            async with session.get(TEST_URL, headers=headers, proxy=proxy_url, timeout=TIMEOUT) as resp:
-                if resp.status not in (200, 206):
-                    raise Exception(f"HTTP {resp.status}")
-                total = 0
-                async for chunk in resp.content.iter_chunked(65536):
-                    total += len(chunk)
-                    if total >= 10 * 1024 * 1024:
-                        break
-                elapsed = perf_counter() - start
-                speed   = total / elapsed / 1024 / 1024
-                latency = elapsed
-                score   = speed / (latency + 0.01)
-                good.append(proxy)
-                return proxy, scheme, latency, speed, score, True
-    except Exception:
-        bad.append(proxy)
-        return proxy, scheme, None, None, 0.0, False
-
-async def run_tests(proxies: list, scheme: str):
-    connector = aiohttp.TCPConnector(ssl=False, limit=None)
-    timeout   = aiohttp.ClientTimeout(total=TIMEOUT)
-    results   = []
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        tasks = [try_proxy(session, p, scheme) for p in proxies]
-        for future in tqdm(asyncio.as_completed(tasks),
-                           total=len(tasks),
-                           desc=f"Testing {scheme.upper()}",
-                           unit="proxy"):
-            res = await future
-            results.append(res)
-    return results
-
-def load_proxies(path: str):
-    try:
-        with open(path) as f:
-            return [line.strip() for line in f if line.strip()]
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return [ln.strip() for ln in f if ln.strip()]
     except FileNotFoundError:
-        print(f"Warning: {path} not found. Skipping {path.split('.')[0]} proxies.")
+        print(f"Warning: {path} not found.")
         return []
 
-def remove_duplicates(http_list: list, socks5_list: list, socks4_list: list) -> tuple:
-    """Remove duplicate IP:port combinations, prioritizing SOCKS5 when duplicates exist."""
-    print("Checking for duplicate IP:port combinations...")
-    
-    # Create sets of IP:port combinations for each protocol
-    http_ips = set(http_list)
-    socks5_ips = set(socks5_list)
-    socks4_ips = set(socks4_list)
-    
-    # Find all unique IP:port combinations
-    all_ips = http_ips | socks5_ips | socks4_ips
-    
-    # Track which protocol each IP:port came from originally
-    ip_sources = {}
-    for ip in http_ips:
-        ip_sources[ip] = 'http'
-    for ip in socks5_ips:
-        ip_sources[ip] = 'socks5'
-    for ip in socks4_ips:
-        ip_sources[ip] = 'socks4'
-    
-    # Resolve duplicates by prioritizing SOCKS5
-    final_http = []
-    final_socks5 = []
-    final_socks4 = []
-    
-    duplicates_found = 0
-    
-    for ip in all_ips:
-        sources = []
-        if ip in http_ips:
-            sources.append('http')
-        if ip in socks5_ips:
-            sources.append('socks5')
-        if ip in socks4_ips:
-            sources.append('socks4')
-        
-        if len(sources) > 1:
-            duplicates_found += 1
-            # Prioritize SOCKS5, then HTTP, then SOCKS4
-            if 'socks5' in sources:
-                final_socks5.append(ip)
-            elif 'http' in sources:
-                final_http.append(ip)
-            else:
-                final_socks4.append(ip)
-        else:
-            # No duplicates, add to appropriate list
-            protocol = sources[0]
-            if protocol == 'http':
-                final_http.append(ip)
-            elif protocol == 'socks5':
-                final_socks5.append(ip)
-            else:  # socks4
-                final_socks4.append(ip)
-    
-    if duplicates_found > 0:
-        print(f"Found {duplicates_found} duplicate IP:port combinations")
-        print(f"Duplicates resolved by prioritizing SOCKS5 > HTTP > SOCKS4")
-    
-    return final_http, final_socks5, final_socks4
+def load_and_validate_lists():
+    http_raw   = load_lines(INPUT_HTTP)
+    socks5_raw = load_lines(INPUT_SOCKS5)
+    socks4_raw = load_lines(INPUT_SOCKS4)
 
-def load_history():
-    history = defaultdict(lambda: deque(maxlen=HISTORY_MAX_RUNS))
+    def _filter(raw, expected_scheme):
+        good, dropped = [], 0
+        for line in raw:
+            parsed = normalize_proxy_line(line, expected_scheme)
+            if parsed is None:
+                dropped += 1
+                continue
+            scheme, authority = parsed
+            if scheme == expected_scheme:
+                good.append(authority)
+            else:
+                dropped += 1
+        # Deduplicate only WITHIN each list; keep cross-protocol dup
+        uniq = list(sorted(set(good)))
+        dropped += len(good) - len(uniq)
+        random.shuffle(uniq)  # avoid source-order bias when early-stop on
+        return uniq, dropped
+
+    http_list,   d_http = _filter(http_raw,   "http")
+    socks5_list, d_s5   = _filter(socks5_raw, "socks5")
+    socks4_list, d_s4   = _filter(socks4_raw, "socks4")
+
+    print(f"Validation drops — HTTP: {d_http} | SOCKS5: {d_s5} | SOCKS4: {d_s4}")
+    return http_list, socks5_list, socks4_list
+
+# ===================== TIMING HELPER =====================
+_timings: dict[str, float] = {}
+
+async def timed(label: str, awaitable):
+    t0 = perf_counter()
+    result = await awaitable
+    _timings[label] = perf_counter() - t0
+    return result
+
+# ===================== STAGE 0: TCP PREFILTER =====================
+async def tcp_open(host: str, port: int, timeout_s: float) -> bool:
+    try:
+        fut = asyncio.open_connection(host=host, port=port)
+        reader, writer = await asyncio.wait_for(fut, timeout=timeout_s)
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+async def tcp_prefilter(authorities: List[str], concurrency: int, timeout_s: float,
+                        early_stop_target: Optional[int] = None, label: str = "") -> List[str]:
+    sem = asyncio.Semaphore(concurrency)
+    alive = []
+
+    async def one(auth: str):
+        hp = extract_host_port(auth)
+        if not hp:
+            return None
+        host, port = hp
+        async with sem:
+            ok = await tcp_open(host, port, timeout_s)
+            return auth if ok else None
+
+    for i in range(0, len(authorities), BATCH_SIZE):
+        batch = authorities[i:i+BATCH_SIZE]
+        tasks = [one(a) for a in batch]
+        for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks),
+                        desc=f"TCP prefilter {label} ({i//BATCH_SIZE+1})", unit="proxy"):
+            res = await fut
+            if res:
+                alive.append(res)
+                if early_stop_target and len(alive) >= early_stop_target * 3:
+                    return alive
+    return alive
+
+# ===================== STAGE 1: THROUGHPUT TEST =====================
+def make_http_session(limit: int) -> aiohttp.ClientSession:
+    connector = aiohttp.TCPConnector(
+        ssl=False, limit=limit, ttl_dns_cache=300, enable_cleanup_closed=True
+    )
+    timeout = aiohttp.ClientTimeout(
+        total=None, connect=DL_CONNECT_TO, sock_connect=DL_SOCK_CONNECT, sock_read=DL_SOCK_READ
+    )
+    return aiohttp.ClientSession(connector=connector, timeout=timeout)
+
+def make_socks_session(proxy_url: str) -> Optional[aiohttp.ClientSession]:
+    try:
+        connector = ProxyConnector.from_url(proxy_url, ttl_dns_cache=300)
+    except Exception:
+        return None
+    timeout = aiohttp.ClientTimeout(
+        total=None, connect=DL_CONNECT_TO, sock_connect=DL_SOCK_CONNECT, sock_read=DL_SOCK_READ
+    )
+    return aiohttp.ClientSession(connector=connector, timeout=timeout)
+
+TEST_URL_HTTP = "http://ipv4.download.thinkbroadband.com/100MB.zip"
+RANGE_HEADER  = "bytes=0-2097151"      # ~2 MB
+
+async def download_http(session_http: aiohttp.ClientSession, authority: str):
+    headers = {"Range": RANGE_HEADER}
+    start = perf_counter()
+    try:
+        async with session_http.get(TEST_URL_HTTP, headers=headers, proxy=f"http://{authority}") as resp:
+            if resp.status not in (200, 206):
+                raise RuntimeError(f"HTTP {resp.status}")
+            total = 0
+            target = int(RANGE_HEADER.split("-")[1]) + 1
+            async for chunk in resp.content.iter_chunked(65536):
+                total += len(chunk)
+                if total >= target:
+                    break
+        elapsed = perf_counter() - start
+        speed = total / elapsed / 1024 / 1024 if elapsed > 0 else 0.0
+        score = speed / (elapsed + 0.01)
+        return authority, "http", elapsed, speed, score, True
+    except Exception:
+        return authority, "http", None, None, 0.0, False
+
+async def download_socks(authority: str, scheme: str):
+    session = make_socks_session(f"{scheme}://{authority}")
+    if session is None:
+        return authority, scheme, None, None, 0.0, False
+    headers = {"Range": RANGE_HEADER}
+    start = perf_counter()
+    try:
+        async with session.get(TEST_URL_HTTP, headers=headers) as resp:
+            if resp.status not in (200, 206):
+                raise RuntimeError(f"HTTP {resp.status}")
+            total = 0
+            target = int(RANGE_HEADER.split("-")[1]) + 1
+            async for chunk in resp.content.iter_chunked(65536):
+                total += len(chunk)
+                if total >= target:
+                    break
+        elapsed = perf_counter() - start
+        speed = total / elapsed / 1024 / 1024 if elapsed > 0 else 0.0
+        score = speed / (elapsed + 0.01)
+        return authority, scheme, elapsed, speed, score, True
+    except Exception:
+        return authority, scheme, None, None, 0.0, False
+    finally:
+        try:
+            await session.close()
+        except Exception:
+            pass
+
+async def run_throughput_http(alive_http: List[str]) -> List[tuple]:
+    results = []
+    sem = asyncio.Semaphore(HTTP_CONCURRENCY)
+    async with make_http_session(HTTP_CONCURRENCY) as session_http:
+
+        async def one(a):
+            async with sem:
+                return await download_http(session_http, a)
+
+        stop_at = EARLY_STOP_GOOD["http"]
+        for i in range(0, len(alive_http), BATCH_SIZE):
+            batch = alive_http[i:i+BATCH_SIZE]
+            tasks = [one(a) for a in batch]
+            for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks),
+                            desc=f"HTTP throughput ({i//BATCH_SIZE+1})", unit="proxy"):
+                res = await fut
+                results.append(res)
+                if stop_at and sum(1 for r in results if r[5]) >= stop_at:
+                    return results
+    return results
+
+async def run_throughput_socks(alive_socks: List[str], scheme: str, key: str) -> List[tuple]:
+    results = []
+    sem = asyncio.Semaphore(SOCKS_CONCURRENCY)
+
+    async def one(a):
+        async with sem:
+            return await download_socks(a, scheme)
+
+    stop_at = EARLY_STOP_GOOD[key]
+    for i in range(0, len(alive_socks), BATCH_SIZE):
+        batch = alive_socks[i:i+BATCH_SIZE]
+        tasks = [one(a) for a in batch]
+        for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks),
+                        desc=f"{scheme.upper()} throughput ({i//BATCH_SIZE+1})", unit="proxy"):
+            res = await fut
+            results.append(res)
+            if stop_at and sum(1 for r in results if r[5]) >= stop_at:
+                return results
+    return results
+
+# ===================== HISTORY =====================
+def load_history() -> defaultdict[str, deque]:
+    hist = defaultdict(lambda: deque(maxlen=HISTORY_MAX_RUNS))
     if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE) as f:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                proxy = row['Proxy']
-                score = float(row['Score'])
-                success = row['Success'] == '1'
-                history[proxy].append((score, success))
-    return history
+                key = row.get("ProxyKey") or row.get("Proxy")
+                try:
+                    score = float(row.get("Score", "0") or 0)
+                except:
+                    score = 0.0
+                success = row.get("Success", "0") == "1"
+                if key:
+                    hist[key].append((score, success))
+    return hist
 
-def save_history(history):
-    with open(HISTORY_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Proxy", "Timestamp", "Score", "Success"])
-        for proxy, entries in history.items():
+def save_history(hist: defaultdict[str, deque]):
+    with open(HISTORY_FILE, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["ProxyKey", "Timestamp", "Score", "Success"])
+        now = int(time())
+        for key, entries in hist.items():
             for score, success in entries:
-                writer.writerow([proxy, int(time()), f"{score:.2f}", '1' if success else '0'])
+                w.writerow([key, now, f"{score:.2f}", "1" if success else "0"])
 
-def save_mb_proxies(sorted_rows):
-    """Save the best performing proxies to MBProxies.txt in IP:port format."""
-    # Filter proxies based on performance criteria
-    qualified_proxies = []
-    
-    for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted_rows:
-        # Only include proxies that:
-        # 1. Have a current score above threshold
-        # 2. Have a good response rate
-        # 3. Actually succeeded in the current test (have latency and speed data)
-        if (sc >= MIN_SCORE_THRESHOLD and 
-            rr >= MIN_RESPONSE_RATE and 
-            lat is not None and spd is not None):
-            qualified_proxies.append((proxy, sc))
-    
-    if not qualified_proxies:
-        print("Warning: No proxies met the quality criteria!")
-        return 0
-    
-    # Sort by score (best to worst)
-    qualified_proxies.sort(key=lambda x: x[1], reverse=True)
-    
-    # Smart fallback approach: ensure minimum count while prioritizing quality
-    total_qualified = len(qualified_proxies)
-    
-    if total_qualified >= MIN_PROXIES_COUNT:
-        # We have enough qualified proxies, use only the qualified ones
-        final_proxies = qualified_proxies
-        print(f"Found {total_qualified} qualified proxies (above minimum {MIN_PROXIES_COUNT})")
-        print(f"Including all {total_qualified} qualified proxies")
-    else:
-        # We don't have enough qualified proxies, need to include some fallback proxies
-        print(f"Only {total_qualified} proxies met quality criteria (below minimum {MIN_PROXIES_COUNT})")
-        print(f"Adding fallback proxies to reach minimum {MIN_PROXIES_COUNT}")
-        
-        # Start with all qualified proxies
-        final_proxies = qualified_proxies.copy()
-        
-        # Find additional proxies that succeeded in testing but didn't meet quality thresholds
-        fallback_proxies = []
-        for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted_rows:
-            # Include proxies that succeeded in testing (have latency/speed data) but don't meet quality thresholds
-            if (proxy not in [p[0] for p in final_proxies] and  # Not already included
-                lat is not None and spd is not None):  # Succeeded in current test
-                fallback_proxies.append((proxy, sc))
-        
-        # Sort fallback proxies by score (best to worst)
-        fallback_proxies.sort(key=lambda x: x[1], reverse=True)
-        
-        # Add fallback proxies until we reach the minimum
-        needed_fallback = MIN_PROXIES_COUNT - total_qualified
-        fallback_to_add = fallback_proxies[:needed_fallback]
-        
-        final_proxies.extend(fallback_to_add)
-        
-        print(f"Added {len(fallback_to_add)} fallback proxies (total: {len(final_proxies)})")
-        print(f"Fallback proxies don't meet strict quality criteria but succeeded in testing")
-    
-    # Save to MBProxies.txt (IP:port format only)
-    with open(MB_PROXIES_FILE, "w") as f:
-        for proxy, score in final_proxies:
-            f.write(f"{proxy}\n")
-    
-    print(f"Saved {len(final_proxies)} proxies to {MB_PROXIES_FILE}")
-    print(f"Quality criteria: Score >= {MIN_SCORE_THRESHOLD}, Response rate >= {MIN_RESPONSE_RATE}%")
-    print(f"Result: {len(final_proxies)} proxies included (ensuring minimum {MIN_PROXIES_COUNT})")
-    
-    return len(final_proxies)
+# ===================== MBProxies writer (IPv4 only, threshold + min count) =====================
+def save_mbproxies(all_results: List[tuple], dest: str,
+                   min_score: float, min_count: int) -> int:
+    """
+    Build Output/MBProxies.txt:
+      - include only successes
+      - first: all with Current Score >= min_score
+      - then: add best remaining to reach min_count
+      - one ip:port per line, deduped by ip:port (keep best score)
+    """
+    successes = [(p, s, lat, spd, sc, ok) for (p, s, lat, spd, sc, ok) in all_results if ok]
 
+    # sort by Current Score desc
+    successes.sort(key=lambda r: r[4], reverse=True)
+
+    selected = []
+    seen = set()
+
+    # pass 1: threshold
+    for proxy, scheme, lat, spd, sc, ok in successes:
+        if sc < min_score:
+            continue
+        if proxy in seen:
+            continue
+        seen.add(proxy)
+        selected.append(proxy)
+
+    # pass 2: top-up to min_count
+    if len(selected) < min_count:
+        for proxy, scheme, lat, spd, sc, ok in successes:
+            if proxy in seen:
+                continue
+            seen.add(proxy)
+            selected.append(proxy)
+            if len(selected) >= min_count:
+                break
+
+    # write as ip:port per line
+    with open(dest, "w", encoding="utf-8") as f:
+        for proxy in selected:
+            f.write(proxy + "\n")
+
+    return len(selected)
+
+# ===================== MAIN =====================
 async def main():
-    print("Starting proxy benchmark...")
-    print(f"Loading proxies from: {PROXY_FILE_HTTP}, {PROXY_FILE_SOCKS5}, {PROXY_FILE_SOCKS4}")
-    
-    # Ensure output directory exists
-    ensure_output_directory()
-    
-    t0 = perf_counter()
-    http_list   = load_proxies(PROXY_FILE_HTTP)
-    socks5_list = load_proxies(PROXY_FILE_SOCKS5)
-    socks4_list = load_proxies(PROXY_FILE_SOCKS4)
+    ensure_output_dir()
+    # Silence noisy Proactor "connection lost" tracebacks on Windows
+    if sys.platform.startswith("win") and SUPPRESS_WIN_RESET_TRACEBACKS:
+        loop = asyncio.get_running_loop()
+        def _win_handler(loop, context):
+            exc = context.get("exception")
+            msg = context.get("message", "")
+            if isinstance(exc, ConnectionResetError) and "_ProactorBasePipeTransport._call_connection_lost" in msg:
+                return  # swallow benign 10054 noise
+            loop.default_exception_handler(context)
+        loop.set_exception_handler(_win_handler)
 
-    total_proxies = len(http_list) + len(socks5_list) + len(socks4_list)
-    if total_proxies == 0:
-        print("No proxies found! Make sure getproxy.py has been run first.")
-        return
-    
-    print(f"Loaded {len(http_list)} HTTP, {len(socks5_list)} SOCKS5, {len(socks4_list)} SOCKS4 proxies")
-    print(f"Total proxies loaded: {total_proxies}")
+    print("Starting proxy benchmark (TCP prefilter + short throughput)…")
+    t_total0 = perf_counter()
 
-    # Remove duplicate IP:port combinations
-    http_list, socks5_list, socks4_list = remove_duplicates(http_list, socks5_list, socks4_list)
-    
-    total_proxies_after_dedup = len(http_list) + len(socks5_list) + len(socks4_list)
-    print(f"After removing duplicates: {len(http_list)} HTTP, {len(socks5_list)} SOCKS5, {len(socks4_list)} SOCKS4 proxies")
-    print(f"Total proxies after deduplication: {total_proxies_after_dedup}")
+    http_list, socks5_list, socks4_list = load_and_validate_lists()
+    total_in = len(http_list) + len(socks5_list) + len(socks4_list)
+    print(f"Loaded (validated) — HTTP: {len(http_list)} | SOCKS5: {len(socks5_list)} | SOCKS4: {len(socks4_list)} | Total: {total_in}")
 
-    # Pre-screen proxies to filter out dead ones
-    print("\n=== PRE-SCREENING PHASE ===")
-    http_proxies_to_test = await pre_screen_proxies(http_list, "http")
-    socks5_proxies_to_test = await pre_screen_proxies(socks5_list, "socks5")
-    socks4_proxies_to_test = await pre_screen_proxies(socks4_list, "socks4")
+    # ---- Stage 0: TCP PREFILTER ----
+    http_alive = await timed("TCP prefilter HTTP",
+        tcp_prefilter(http_list,  TCP_CONCURRENCY, TCP_TIMEOUT_S, EARLY_STOP_GOOD["http"],   "HTTP")
+    )
+    s5_alive   = await timed("TCP prefilter SOCKS5",
+        tcp_prefilter(socks5_list, TCP_CONCURRENCY, TCP_TIMEOUT_S, EARLY_STOP_GOOD["socks5"], "SOCKS5")
+    )
+    s4_alive   = await timed("TCP prefilter SOCKS4",
+        tcp_prefilter(socks4_list, TCP_CONCURRENCY, TCP_TIMEOUT_S, EARLY_STOP_GOOD["socks4"], "SOCKS4")
+    )
 
-    all_proxies_to_test = http_proxies_to_test + socks5_proxies_to_test + socks4_proxies_to_test
-    if not all_proxies_to_test:
-        print("No responsive proxies found after pre-screening!")
-        return
+    print(f"TCP-alive — HTTP: {len(http_alive)} | SOCKS5: {len(s5_alive)} | SOCKS4: {len(s4_alive)}")
 
-    print(f"\n=== PERFORMANCE TESTING PHASE ===")
-    print(f"Proxies to test: {len(all_proxies_to_test)} (filtered from {total_proxies_after_dedup} total)")
-    print(f"Filtered out: {total_proxies_after_dedup - len(all_proxies_to_test)} dead/unresponsive proxies")
+    # ---- Stage 1: THROUGHPUT ----
+    http_res = await timed("HTTP throughput",  run_throughput_http(http_alive))
+    s5_res   = await timed("SOCKS5 throughput", run_throughput_socks(s5_alive, "socks5", "socks5"))
+    s4_res   = await timed("SOCKS4 throughput", run_throughput_socks(s4_alive, "socks4", "socks4"))
 
-    all_results = []
-    if http_proxies_to_test:
-        all_results += await run_tests(http_proxies_to_test, "http")
-    if socks5_proxies_to_test:
-        all_results += await run_tests(socks5_proxies_to_test, "socks5")
-    if socks4_proxies_to_test:
-        all_results += await run_tests(socks4_proxies_to_test, "socks4")
+    all_results = http_res + s5_res + s4_res
 
-    history = load_history()
-    for proxy, scheme, lat, spd, sc, success in all_results:
-        history[proxy].append((sc, success))
-    save_history(history)
-
-    # Prepare CSV rows
+    # ---- History aggregation (per protocol://proxy key) ----
+    hist = load_history()
     rows = []
     for proxy, scheme, lat, spd, sc, success in all_results:
-        entries = list(history[proxy])
+        key = f"{scheme}://{proxy}"
+        hist[key].append((sc, success))
+        entries = list(hist[key])
+
         lt = sum(score for score, _ in entries) / len(entries) if entries else sc
-        rr = sum(1 for _, succ in entries if succ)/len(entries)*100 if entries else (100.0 if success else 0.0)
-        ss = [score for score, succ in entries if succ]
-        ra = sum(ss)/len(ss) if ss else 0.0
+        rr = (sum(1 for _, succ in entries if succ) / len(entries) * 100.0) if entries else (100.0 if success else 0.0)
+        succ_scores = [s for s, ok in entries if ok]
+        ra = (sum(succ_scores) / len(succ_scores)) if succ_scores else 0.0
+
         rows.append((proxy, scheme, lat, spd, sc, lt, rr, ra))
 
-    sorted_rows = sorted(rows, key=lambda r: r[5], reverse=True)
+    save_history(hist)
 
-    # Save detailed CSV results
-    with open(CSV_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "Proxy","Protocol","Latency (s)","Speed (MB/s)",
-            "Current Score","Long-Term Score",
-            "Response Rate (%)","Response AVG"
+    # ---- Write EXACT CSV columns to Output/ ----
+    with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "Proxy", "Protocol", "Latency (s)", "Speed (MB/s)",
+            "Current Score", "Long-Term Score", "Response Rate (%)", "Response AVG"
         ])
-        for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted_rows:
-            writer.writerow([
+        for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted(rows, key=lambda r: r[5], reverse=True):
+            w.writerow([
                 proxy, scheme,
-                f"{lat:.3f}" if lat else "",
-                f"{spd:.2f}" if spd else "",
+                f"{lat:.3f}" if lat is not None else "",
+                f"{spd:.2f}" if spd is not None else "",
                 f"{sc:.2f}", f"{lt:.2f}",
                 f"{rr:.1f}", f"{ra:.2f}"
             ])
 
-    # Save MBProxies.txt with best performing proxies
-    mb_proxies_count = save_mb_proxies(sorted_rows)
+    # ---- MBProxies (threshold + minimum count) ----
+    count_mb = save_mbproxies(all_results, MBPROXIES_TXT,
+                              min_score=MIN_MB_SCORE_THRESHOLD,
+                              min_count=MIN_MB_COUNT)
 
-    elapsed = perf_counter() - t0
-    print(f"\n=== BENCHMARK SUMMARY ===")
-    print(f"Total time: {elapsed:.2f}s")
-    print(f"Original proxies: {total_proxies}")
-    print(f"After deduplication: {total_proxies_after_dedup}")
-    print(f"Pre-screening: Filtered {total_proxies_after_dedup - len(all_proxies_to_test)} dead proxies from {total_proxies_after_dedup} total")
-    print(f"Performance testing: {len(good)} good, {len(bad)} bad")
-    print(f"Qualified proxies: {mb_proxies_count} → {MB_PROXIES_FILE}")
-    print(f"Detailed results: {CSV_FILE}")
-    print(f"Proxy history: {HISTORY_FILE}")
-    print(f"All output files are now saved to the '{OUTPUT_DIR}' folder")
+    # ---- Timing summary ----
+    t_total = perf_counter() - t_total0
+    print("\n=== TIMING SUMMARY ===")
+    for k in [
+        "TCP prefilter HTTP", "TCP prefilter SOCKS5", "TCP prefilter SOCKS4",
+        "HTTP throughput", "SOCKS5 throughput", "SOCKS4 throughput"
+    ]:
+        if k in _timings:
+            print(f"{k:>22}: {_timings[k]:6.2f}s")
+    print(f"{'Total':>22}: {t_total:6.2f}s")
+
+    # ---- Final counts ----
+    ok_http   = sum(1 for r in http_res if r[5])
+    ok_socks5 = sum(1 for r in s5_res   if r[5])
+    ok_socks4 = sum(1 for r in s4_res   if r[5])
+    print(f"\nDone. Results CSV : {CSV_FILE}")
+    print(f"History CSV       : {HISTORY_FILE}")
+    print(f"MBProxies         : {MBPROXIES_TXT}  [{count_mb} proxies | min score {MIN_MB_SCORE_THRESHOLD} | min count {MIN_MB_COUNT}]")
+    print(f"Successful — HTTP: {ok_http} | SOCKS5: {ok_socks5} | SOCKS4: {ok_socks4} | Total: {ok_http + ok_socks5 + ok_socks4}")
 
 if __name__ == "__main__":
     asyncio.run(main())

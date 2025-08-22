@@ -126,7 +126,7 @@ def main():
     print(f"\n{'='*60}")
     print("🎉 Proxy Pipeline Completed Successfully!")
     print(f"{'='*60}")
-    print("\nPipeline completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\nPipeline completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
     main()

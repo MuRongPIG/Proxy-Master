@@ -17,10 +17,6 @@ on:
         - full
         - scrape_only
         - benchmark_only
-  
-  # Run on push to main branch
-  push:
-    branches: [ main ]
 
 jobs:
   proxy-pipeline:
