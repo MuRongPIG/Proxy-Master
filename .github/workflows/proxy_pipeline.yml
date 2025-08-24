@@ -1,9 +1,9 @@
 name: Proxy Pipeline
 
 on:
-  # Run automatically every 30 minutes
-  schedule:
-    - cron: '*/500 * * * *'
+  # Run automatically every 6 hours
+schedule:
+  - cron: '0 */6 * * *'
   
   # Allow manual triggering
   workflow_dispatch:
