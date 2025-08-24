@@ -1,25 +1,41 @@
-name: Benchmark Proxies
+name: Proxy Task
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "getproxy or benchmark"
+        required: true
+        default: "benchmark"
+        type: choice
+        options: [benchmark, getproxy]
       workers:
-        description: "Number of concurrent threads"
+        description: "Concurrent threads (benchmark only)"
         required: false
         default: "512"
-  schedule:
-    - cron: "15 */8 * * *"  # staggered from collection
+  workflow_call:
+    inputs:
+      mode:
+        required: true
+        type: string
+      workers:
+        required: false
+        type: string
+    secrets: {}  # inherit in caller
 
 permissions:
   contents: write
 
 concurrency:
-  group: proxy-master-benchmark-${{ github.ref }}
+  group: proxy-task-${{ github.ref }}-${{ inputs.mode || github.event.inputs.mode }}
   cancel-in-progress: false
 
 jobs:
-  benchmark:
+  run:
     runs-on: ubuntu-latest
+    env:
+      MODE: ${{ inputs.mode || github.event.inputs.mode || 'benchmark' }}
+      WORKERS: ${{ inputs.workers || github.event.inputs.workers || '512' }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -34,24 +50,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Benchmark proxies
-        run: python proxy_benchmark.py ${{ github.event.inputs.workers }}
+      - name: Run task
+        run: |
+          if [ "$MODE" = "getproxy" ]; then
+            python getproxy.py
+          else
+            python proxy_benchmark.py "$WORKERS"
+          fi
 
-      - name: Commit benchmark artifacts
+      - name: Commit results
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Output/ *_checked.txt 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "Benchmark results ($(date '+%F %H:%M %Z'))"
+          git diff --cached --quiet || git commit -m "Results ($(date '+%F %H:%M %Z'))"
 
-      - name: Sync branch before push
+      - name: Sync and push
         run: |
+          set -e
           git fetch origin main
           git rebase origin/main || { git rebase --abort || true; git pull --rebase origin main; }
-
-      - name: Push changes
-        uses: ad-m/github-push-action@v0.6.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
-          force_with_lease: true
+          git push --force-with-lease
