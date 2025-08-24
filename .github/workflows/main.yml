@@ -9,15 +9,17 @@ permissions:
 
 concurrency:
   group: getproxy-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   collect:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout repo on main
         uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          ref: main   # avoid detached HEAD
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -39,15 +41,16 @@ jobs:
           git add http.txt socks4.txt socks5.txt ProxyList.csv TestProxySheet.csv 2>/dev/null || true
           git diff --cached --quiet || git commit -m "Update proxies ($(date '+%F %H:%M %Z'))"
 
-      - name: Sync branch before push
+      - name: Sync branch before push (prefer this run's Output)
         run: |
           set -e
           git fetch origin main
-          git rebase origin/main || { git rebase --abort || true; git pull --rebase origin main; }
+          # merge instead of rebase to avoid conflicts on generated files
+          git -c pull.rebase=false pull --strategy=recursive -X ours origin main || true
 
       - name: Push changes
-        uses: ad-m/github-push-action@v0.6.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
-          force_with_lease: true
+        run: |
+          set -e
+          # no-op if nothing to push
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git push --force-with-lease
