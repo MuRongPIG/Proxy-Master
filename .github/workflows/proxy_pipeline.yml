@@ -1,11 +1,8 @@
 name: Proxy Pipeline
 
 on:
-  # Run automatically every 6 hours
   schedule:
     - cron: '0 */6 * * *'
-
-  # Allow manual triggering
   workflow_dispatch:
     inputs:
       run_type:
@@ -13,24 +10,28 @@ on:
         required: true
         default: 'full'
         type: choice
-        options:
-          - full
-          - scrape_only
-          - benchmark_only
+        options: [full, scrape_only, benchmark_only]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: proxy-pipeline-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   proxy-pipeline:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+        with: { fetch-depth: 0 }
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-        
+          python-version: '3.10'
+
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -38,25 +39,22 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-          
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-        
+
       - name: Run Proxy Pipeline
         run: |
-          if [ "${{ github.event.inputs.run_type }}" = "scrape_only" ]; then
-            echo "Running proxy scraping only..."
+          if [ "${{ github.event.inputs.run_type}" = "scrape_only" ]; then
             python getproxy.py
-          elif [ "${{ github.event.inputs.run_type }}" = "benchmark_only" ]; then
-            echo "Running proxy benchmarking only..."
+          elif [ "${{ github.event.inputs.run_type}" = "benchmark_only" ]; then
             python proxy_benchmark.py
           else
-            echo "Running full proxy pipeline..."
             python run_proxy_pipeline.py
           fi
-        
+
       - name: Upload proxy files as artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -66,12 +64,17 @@ jobs:
             *.txt
             *.csv
           retention-days: 7
-        
+
       - name: Commit and push results
         if: github.ref == 'refs/heads/main'
         run: |
+          set -e
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add -A
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update proxy results [skip ci]"
-          git push
+          git diff --cached --quiet && exit 0
+          git commit -m "Update proxy results [skip ci]"
+          # Sync then push safely
+          git fetch origin main
+          git -c pull.rebase=false pull --strategy=recursive -X ours origin main || true
+          git push --force-with-lease
