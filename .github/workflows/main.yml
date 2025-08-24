@@ -1,15 +1,14 @@
-name: get proxy
+name: Get Proxy Task
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */8 * * *"   # every 8 hours
+  workflow_call:
 
 permissions:
   contents: write
 
 concurrency:
-  group: proxy-master-main-${{ github.ref }}
+  group: getproxy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -22,7 +21,8 @@ jobs:
 
       - name: Setup Python
         uses: actions/setup-python@v5
-        with: { python-version: "3.10" }
+        with:
+          python-version: "3.10"
 
       - name: Install dependencies
         run: |
@@ -36,12 +36,12 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add http.txt socks4.txt socks5.txt ProxyList.csv 2>/dev/null || true
-          git add TestProxySheet.csv 2>/dev/null || true
+          git add http.txt socks4.txt socks5.txt ProxyList.csv TestProxySheet.csv 2>/dev/null || true
           git diff --cached --quiet || git commit -m "Update proxies ($(date '+%F %H:%M %Z'))"
 
       - name: Sync branch before push
         run: |
+          set -e
           git fetch origin main
           git rebase origin/main || { git rebase --abort || true; git pull --rebase origin main; }
 
