@@ -46,14 +46,21 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Proxy Pipeline
+        env:
+          RUN_TYPE: ${{ github.event.inputs.run_type || 'full' }}   # 'full' on schedule
         run: |
-          if [ "${{ github.event.inputs.run_type}" = "scrape_only" ]; then
-            python getproxy.py
-          elif [ "${{ github.event.inputs.run_type}" = "benchmark_only" ]; then
-            python proxy_benchmark.py
-          else
-            python run_proxy_pipeline.py
-          fi
+          set -e
+          case "$RUN_TYPE" in
+            scrape_only)
+              python getproxy.py
+              ;;
+            benchmark_only)
+              python proxy_benchmark.py
+              ;;
+            *)
+              python run_proxy_pipeline.py
+              ;;
+          esac
 
       - name: Upload proxy files as artifacts
         uses: actions/upload-artifact@v4
@@ -74,7 +81,6 @@ jobs:
           git add -A
           git diff --cached --quiet && exit 0
           git commit -m "Update proxy results [skip ci]"
-          # Sync then push safely
           git fetch origin main
           git -c pull.rebase=false pull --strategy=recursive -X ours origin main || true
           git push --force-with-lease
