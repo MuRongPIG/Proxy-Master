@@ -1,4 +1,4 @@
-name: Proxy Pipeline
+name: Proxy Pipeline (Fast)
 
 on:
   schedule:
@@ -6,11 +6,45 @@ on:
   workflow_dispatch:
     inputs:
       run_type:
-        description: 'Pipeline type to run'
+        description: 'Pipeline type'
         required: true
         default: 'full'
         type: choice
         options: [full, scrape_only, benchmark_only]
+      workers:
+        description: 'Concurrent threads for benchmark'
+        required: false
+        default: '384'
+      bench_urls:
+        description: 'Comma-separated test URLs'
+        required: false
+        default: ''
+      sustain_seconds:
+        description: 'Sustained window seconds'
+        required: false
+        default: '20'
+      min_score:
+        description: 'MBProxies min score'
+        required: false
+        default: '0.25'
+      min_count:
+        description: 'MBProxies min count'
+        required: false
+        default: '75'
+      early_stop:
+        description: 'e.g. http=150,socks5=150,socks4=0'
+        required: false
+        default: ''
+      prefilter_limits:
+        description: 'e.g. http=120000,socks5=80000,socks4=0'
+        required: false
+        default: ''
+      ci_fast:
+        description: 'Enable fast CI profile'
+        required: true
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
 
 permissions:
   contents: write
@@ -22,65 +56,166 @@ concurrency:
 jobs:
   proxy-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CI_TUNED: "1"
+      NO_TQDM:  "1"
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
-      - name: Set up Python
+      - name: Setup Python 3.12 with pip cache
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: "requirements.txt"
 
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+      - name: Raise NOFILE and show limits
+        shell: bash
+        run: |
+          echo "Before: $(ulimit -n)"
+          ulimit -n 8192 || true
+          echo "After : $(ulimit -n)"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run Proxy Pipeline
-        env:
-          RUN_TYPE: ${{ github.event.inputs.run_type || 'full' }}   # 'full' on schedule
+        shell: bash
         run: |
           set -e
-          case "$RUN_TYPE" in
-            scrape_only)
-              python getproxy.py
-              ;;
-            benchmark_only)
-              python proxy_benchmark.py
-              ;;
-            *)
-              python run_proxy_pipeline.py
-              ;;
-          esac
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install aiohttp aiohttp-socks tqdm uvloop
+          fi
 
-      - name: Upload proxy files as artifacts
+      - name: Prepare env (schedule-safe defaults, parse combined inputs)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ inputs.run_type }}"
+            WORKERS="${{ inputs.workers }}"
+            BENCH_URLS="${{ inputs.bench_urls }}"
+            SUSTAIN_SECONDS="${{ inputs.sustain_seconds }}"
+            MIN_MB_SCORE_THRESHOLD="${{ inputs.min_score }}"
+            MIN_MB_COUNT="${{ inputs.min_count }}"
+            CI_FAST="${{ inputs.ci_fast }}"
+            EARLY_STOP_ALL="${{ inputs.early_stop }}"
+            PREFILTER_ALL="${{ inputs.prefilter_limits }}"
+          else
+            MODE="full"
+            WORKERS="384"
+            BENCH_URLS="${{ secrets.BENCH_URLS }}"
+            SUSTAIN_SECONDS="20"
+            MIN_MB_SCORE_THRESHOLD="0.25"
+            MIN_MB_COUNT="75"
+            CI_FAST="true"
+            EARLY_STOP_ALL=""
+            PREFILTER_ALL=""
+          fi
+
+          lower() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+          kvget() {
+            # kvget "a=1, b=2, c=3" "b" -> 2
+            local s="$(lower "$1" | tr -d ' ' )"
+            local k="$(lower "$2")"
+            awk -v pairs="$s" -v key="$k" '
+              BEGIN {
+                n = split(pairs, a, ",");
+                for (i=1;i<=n;i++) {
+                  split(a[i], kv, "=");
+                  if (kv[1] == key) { print kv[2]; exit }
+                }
+              }'
+          }
+
+          EARLY_STOP_HTTP="$(kvget "${EARLY_STOP_ALL}" "http")"
+          EARLY_STOP_SOCKS5="$(kvget "${EARLY_STOP_ALL}" "socks5")"
+          EARLY_STOP_SOCKS4="$(kvget "${EARLY_STOP_ALL}" "socks4")"
+
+          PREFILTER_LIMIT_HTTP="$(kvget "${PREFILTER_ALL}" "http")"
+          PREFILTER_LIMIT_SOCKS5="$(kvget "${PREFILTER_ALL}" "socks5")"
+          PREFILTER_LIMIT_SOCKS4="$(kvget "${PREFILTER_ALL}" "socks4")"
+
+          echo "MODE=$MODE"                               >> "$GITHUB_ENV"
+          echo "WORKERS=$WORKERS"                         >> "$GITHUB_ENV"
+          echo "BENCH_URLS=${BENCH_URLS:-}"               >> "$GITHUB_ENV"
+          echo "SUSTAIN_SECONDS=$SUSTAIN_SECONDS"         >> "$GITHUB_ENV"
+          echo "MIN_MB_SCORE_THRESHOLD=$MIN_MB_SCORE_THRESHOLD" >> "$GITHUB_ENV"
+          echo "MIN_MB_COUNT=$MIN_MB_COUNT"               >> "$GITHUB_ENV"
+          echo "EARLY_STOP_HTTP=${EARLY_STOP_HTTP:-}"     >> "$GITHUB_ENV"
+          echo "EARLY_STOP_SOCKS5=${EARLY_STOP_SOCKS5:-}" >> "$GITHUB_ENV"
+          echo "EARLY_STOP_SOCKS4=${EARLY_STOP_SOCKS4:-}" >> "$GITHUB_ENV"
+          echo "PREFILTER_LIMIT_HTTP=${PREFILTER_LIMIT_HTTP:-}"   >> "$GITHUB_ENV"
+          echo "PREFILTER_LIMIT_SOCKS5=${PREFILTER_LIMIT_SOCKS5:-}" >> "$GITHUB_ENV"
+          echo "PREFILTER_LIMIT_SOCKS4=${PREFILTER_LIMIT_SOCKS4:-}" >> "$GITHUB_ENV"
+          if [ "$CI_FAST" = "true" ]; then echo "CI_FAST=1" >> "$GITHUB_ENV"; fi
+
+      - name: Run Proxy Pipeline
+        shell: bash
+        env:
+          MODE: ${{ env.MODE }}
+          WORKERS: ${{ env.WORKERS }}
+          BENCH_URLS: ${{ env.BENCH_URLS }}
+          SUSTAIN_SECONDS: ${{ env.SUSTAIN_SECONDS }}
+          MIN_MB_SCORE_THRESHOLD: ${{ env.MIN_MB_SCORE_THRESHOLD }}
+          MIN_MB_COUNT: ${{ env.MIN_MB_COUNT }}
+          EARLY_STOP_HTTP: ${{ env.EARLY_STOP_HTTP }}
+          EARLY_STOP_SOCKS5: ${{ env.EARLY_STOP_SOCKS5 }}
+          EARLY_STOP_SOCKS4: ${{ env.EARLY_STOP_SOCKS4 }}
+          PREFILTER_LIMIT_HTTP: ${{ env.PREFILTER_LIMIT_HTTP }}
+          PREFILTER_LIMIT_SOCKS5: ${{ env.PREFILTER_LIMIT_SOCKS5 }}
+          PREFILTER_LIMIT_SOCKS4: ${{ env.PREFILTER_LIMIT_SOCKS4 }}
+          CI_TUNED: ${{ env.CI_TUNED }}
+          CI_FAST:  ${{ env.CI_FAST }}
+          NO_TQDM:  ${{ env.NO_TQDM }}
+        run: |
+          set -euo pipefail
+          echo "Mode=$MODE  Workers=$WORKERS  CI_FAST=${CI_FAST:+1}"
+          echo "Sustain=$SUSTAIN_SECONDS  MinScore=$MIN_MB_SCORE_THRESHOLD  MinCount=$MIN_MB_COUNT"
+          echo "Prefilter caps: HTTP=${PREFILTER_LIMIT_HTTP:-none} S5=${PREFILTER_LIMIT_SOCKS5:-none} S4=${PREFILTER_LIMIT_SOCKS4:-none}"
+
+          if [ "$MODE" = "scrape_only" ]; then
+            python getproxy.py
+          elif [ "$MODE" = "benchmark_only" ]; then
+            [ -f http.txt ] || { echo "http.txt missing"; exit 2; }
+            [ -f socks5.txt ] || echo "socks5.txt missing or empty ok"
+            [ -f socks4.txt ] || echo "socks4.txt missing or empty ok"
+            python proxy_benchmark.py "${WORKERS:-384}"
+          else
+            python getproxy.py
+            python proxy_benchmark.py "${WORKERS:-384}"
+          fi
+
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: proxy-results-${{ github.run_id }}
+          name: proxy-pipeline-${{ github.run_id }}
           path: |
             Output/
             *.txt
             *.csv
           retention-days: 7
 
-      - name: Commit and push results
-        if: github.ref == 'refs/heads/main'
+      - name: Commit results if changed
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Output/ *_checked.txt *.txt *.csv 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Proxy pipeline results ($(date '+%F %H:%M %Z'))"
+          fi
+
+      - name: Rebase and push
+        shell: bash
         run: |
           set -e
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add -A
-          git diff --cached --quiet && exit 0
-          git commit -m "Update proxy results [skip ci]"
           git fetch origin main
-          git -c pull.rebase=false pull --strategy=recursive -X ours origin main || true
+          git rebase origin/main || { git rebase --abort || true; git pull --rebase origin main; }
           git push --force-with-lease
