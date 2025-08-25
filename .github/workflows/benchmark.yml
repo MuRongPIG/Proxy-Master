@@ -1,4 +1,4 @@
-name: Proxy Benchmark
+name: Proxy Benchmark (Fast)
 
 on:
   workflow_dispatch:
@@ -10,62 +10,183 @@ on:
         type: choice
         options: [benchmark, getproxy]
       workers:
-        description: "Concurrent threads (benchmark only)"
+        description: "Concurrent threads"
         required: false
-        default: "512"
-  workflow_call:
-    inputs:
-      mode:
+        default: "384"
+      bench_urls:
+        description: "Comma-separated test URLs"
+        required: false
+        default: ""
+      sustain_seconds:
+        description: "Sustained window seconds"
+        required: false
+        default: "20"
+      min_score:
+        description: "MBProxies min score"
+        required: false
+        default: "0.25"
+      min_count:
+        description: "MBProxies min count"
+        required: false
+        default: "75"
+      early_stop:
+        description: "e.g. http=150,socks5=150,socks4=0"
+        required: false
+        default: ""
+      prefilter_limits:
+        description: "e.g. http=120000,socks5=80000,socks4=0"
+        required: false
+        default: ""
+      ci_fast:
+        description: "Enable fast CI profile"
         required: true
-        type: string
-      workers:
-        required: false
-        type: string
-    secrets: {}  # inherit in caller
+        default: "true"
+        type: choice
+        options: ["true", "false"]
 
 permissions:
   contents: write
 
 concurrency:
-  group: proxy-task-${{ github.ref }}-${{ inputs.mode || github.event.inputs.mode }}
-  cancel-in-progress: false
+  group: proxy-benchmark-${{ github.ref }}-${{ inputs.mode }}
+  cancel-in-progress: true
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
-      MODE: ${{ inputs.mode || github.event.inputs.mode || 'benchmark' }}
-      WORKERS: ${{ inputs.workers || github.event.inputs.workers || '512' }}
+      CI_TUNED: "1"
+      NO_TQDM:  "1"
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      - name: Setup Python
+      - name: Setup Python 3.12 with pip cache
         uses: actions/setup-python@v5
-        with: { python-version: "3.10" }
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: "requirements.txt"
+
+      - name: Raise NOFILE and show limits
+        run: |
+          echo "Before: $(ulimit -n)"
+          ulimit -n 8192 || true
+          echo "After : $(ulimit -n)"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install aiohttp aiohttp-socks tqdm uvloop
+          fi
+
+      - name: Prepare env (parse combined inputs)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODE='${{ inputs.mode }}'
+          WORKERS='${{ inputs.workers }}'
+          BENCH_URLS='${{ inputs.bench_urls }}'
+          SUSTAIN_SECONDS='${{ inputs.sustain_seconds }}'
+          MIN_MB_SCORE_THRESHOLD='${{ inputs.min_score }}'
+          MIN_MB_COUNT='${{ inputs.min_count }}'
+          CI_FAST_IN='${{ inputs.ci_fast }}'
+          EARLY_STOP_ALL='${{ inputs.early_stop }}'
+          PREFILTER_ALL='${{ inputs.prefilter_limits }}'
+
+          # Fallback to secret BENCH_URLS if input empty
+          if [ -z "$BENCH_URLS" ] && [ -n "${{ secrets.BENCH_URLS }}" ]; then
+            BENCH_URLS='${{ secrets.BENCH_URLS }}'
+          fi
+
+          lower() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+          kvget() {
+            local s; s="$(lower "$1" | tr -d ' ')"
+            local k; k="$(lower "$2")"
+            awk -v pairs="$s" -v key="$k" '
+              BEGIN { n=split(pairs,a,","); for(i=1;i<=n;i++){ split(a[i],kv,"="); if(kv[1]==key){ print kv[2]; exit } } }'
+          }
+
+          EARLY_STOP_HTTP="$(kvget "$EARLY_STOP_ALL" "http")"
+          EARLY_STOP_SOCKS5="$(kvget "$EARLY_STOP_ALL" "socks5")"
+          EARLY_STOP_SOCKS4="$(kvget "$EARLY_STOP_ALL" "socks4")"
+
+          PREFILTER_LIMIT_HTTP="$(kvget "$PREFILTER_ALL" "http")"
+          PREFILTER_LIMIT_SOCKS5="$(kvget "$PREFILTER_ALL" "socks5")"
+          PREFILTER_LIMIT_SOCKS4="$(kvget "$PREFILTER_ALL" "socks4")"
+
+          {
+            echo "MODE=$MODE"
+            echo "WORKERS=$WORKERS"
+            echo "BENCH_URLS=$BENCH_URLS"
+            echo "SUSTAIN_SECONDS=$SUSTAIN_SECONDS"
+            echo "MIN_MB_SCORE_THRESHOLD=$MIN_MB_SCORE_THRESHOLD"
+            echo "MIN_MB_COUNT=$MIN_MB_COUNT"
+            echo "EARLY_STOP_HTTP=${EARLY_STOP_HTTP:-}"
+            echo "EARLY_STOP_SOCKS5=${EARLY_STOP_SOCKS5:-}"
+            echo "EARLY_STOP_SOCKS4=${EARLY_STOP_SOCKS4:-}"
+            echo "PREFILTER_LIMIT_HTTP=${PREFILTER_LIMIT_HTTP:-}"
+            echo "PREFILTER_LIMIT_SOCKS5=${PREFILTER_LIMIT_SOCKS5:-}"
+            echo "PREFILTER_LIMIT_SOCKS4=${PREFILTER_LIMIT_SOCKS4:-}"
+            if [ "$CI_FAST_IN" = "true" ]; then echo "CI_FAST=1"; fi
+          } >> "$GITHUB_ENV"
 
       - name: Run task
+        env:
+          MODE: ${{ env.MODE }}
+          WORKERS: ${{ env.WORKERS }}
+          BENCH_URLS: ${{ env.BENCH_URLS }}
+          SUSTAIN_SECONDS: ${{ env.SUSTAIN_SECONDS }}
+          MIN_MB_SCORE_THRESHOLD: ${{ env.MIN_MB_SCORE_THRESHOLD }}
+          MIN_MB_COUNT: ${{ env.MIN_MB_COUNT }}
+          EARLY_STOP_HTTP: ${{ env.EARLY_STOP_HTTP }}
+          EARLY_STOP_SOCKS5: ${{ env.EARLY_STOP_SOCKS5 }}
+          EARLY_STOP_SOCKS4: ${{ env.EARLY_STOP_SOCKS4 }}
+          PREFILTER_LIMIT_HTTP: ${{ env.PREFILTER_LIMIT_HTTP }}
+          PREFILTER_LIMIT_SOCKS5: ${{ env.PREFILTER_LIMIT_SOCKS5 }}
+          PREFILTER_LIMIT_SOCKS4: ${{ env.PREFILTER_LIMIT_SOCKS4 }}
+          CI_TUNED: ${{ env.CI_TUNED }}
+          CI_FAST:  ${{ env.CI_FAST }}
+          NO_TQDM:  ${{ env.NO_TQDM }}
         run: |
+          set -e
+          echo "Mode=$MODE  Workers=$WORKERS  CI_FAST=${CI_FAST:+1}"
+          echo "Sustain=$SUSTAIN_SECONDS  MinScore=$MIN_MB_SCORE_THRESHOLD  MinCount=$MIN_MB_COUNT"
+          echo "Prefilter caps: HTTP=${PREFILTER_LIMIT_HTTP:-none} S5=${PREFILTER_LIMIT_SOCKS5:-none} S4=${PREFILTER_LIMIT_SOCKS4:-none}"
           if [ "$MODE" = "getproxy" ]; then
             python getproxy.py
           else
-            python proxy_benchmark.py "$WORKERS"
+            python proxy_benchmark.py "${WORKERS:-384}"
           fi
 
-      - name: Commit results
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-benchmark-${{ github.run_id }}
+          path: |
+            Output/
+            *.txt
+            *.csv
+          retention-days: 7
+
+      - name: Commit results if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Output/ *_checked.txt 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "Results ($(date '+%F %H:%M %Z'))"
+          git add Output/ *_checked.txt *.txt *.csv 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Benchmark results ($(date '+%F %H:%M %Z'))"
+          fi
 
-      - name: Sync and push
+      - name: Rebase and push
         run: |
           set -e
           git fetch origin main
