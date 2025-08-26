@@ -239,10 +239,15 @@ def load_history():
         with open(HISTORY_FILE) as f:
             reader = csv.DictReader(f)
             for row in reader:
-                proxy = row['Proxy']
-                score = float(row['Score'])
-                success = row['Success'] == '1'
-                history[proxy].append((score, success))
+                if not row or 'Proxy' not in row or 'Score' not in row or 'Success' not in row:
+                    continue  # skip malformed or headerless rows
+                try:
+                    proxy = row['Proxy']
+                    score = float(row['Score'])
+                    success = row['Success'] == '1'
+                    history[proxy].append((score, success))
+                except Exception:
+                    continue  # skip rows with conversion errors
     return history
 
 def save_history(history):
