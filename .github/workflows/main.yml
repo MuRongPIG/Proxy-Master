@@ -2,7 +2,13 @@ name: Get Proxy Task
 
 on:
   workflow_dispatch:
-  workflow_call:
+  w      - name: Commit and push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add http.txt socks4.txt socks5.txt ProxyList.csv
+          git status
+          git diff --cached --quiet || git commit -m "Update proxies ($(date '+%F %H:%M %Z'))"_call:
 
 permissions:
   contents: write
