@@ -533,7 +533,7 @@ class DownloadProxies:
             with path.open('w', encoding="utf-8") as f:
                 for p in sorted(proxies):
                     f.write(p + "\n")
-            print("✅")
+            print(f"✅ (saved to {path.resolve()})")
 
         # Consolidated CSV
         csv_path = out_dir / "ProxyList.csv"
@@ -559,7 +559,7 @@ class DownloadProxies:
                 ]
                 writer.writerow(row)
 
-        print(f"✅ Saved combined sheet to {csv_path}")
+        print(f"✅ Saved combined sheet to {csv_path.resolve()}")
         print(f"🎯 Total proxies: {sum(counts.values())}  •  Timestamp: {now}")
 
 
