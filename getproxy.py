@@ -525,12 +525,19 @@ class DownloadProxies:
 
     def save(self) -> None:
         print("\n💾 Saving proxy files...")
+        import os
         out_dir = Path('.')
+        print(f"   📂 Working directory: {os.getcwd()}")
+
+        # Get timestamp once for all files
+        now = dt.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
         for proto, proxies in self.proxy_dict.items():
             path = out_dir / f"{proto}.txt"
             print(f"   📝 Writing {proto}.txt ({len(proxies)}) ... ", end="")
             with path.open('w', encoding="utf-8") as f:
+                f.write(f"# Updated: {now}\n")  # Force file change
+                f.write(f"# Total: {len(proxies)} proxies\n\n")
                 for p in sorted(proxies):
                     f.write(p + "\n")
             print(f"✅ (saved to {path.resolve()})")
