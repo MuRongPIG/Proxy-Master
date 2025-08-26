@@ -1,4 +1,4 @@
-name: Proxy Benchmark
+name: Proxy Benchmark Claude
 
 on:
   schedule:
