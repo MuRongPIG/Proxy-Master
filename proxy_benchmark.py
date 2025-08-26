@@ -28,30 +28,30 @@ MB_PROXIES_FILE     = os.path.join(OUTPUT_DIR, "MBProxies.txt")
 MB_PROXIES_ALL_FILE = os.path.join(OUTPUT_DIR, "MBProxiesAll.txt")
 
 # TEST SETTINGS - Optimized for sustained download performance
-TEST_URL            = "https://speed.hetzner.de/100MB.bin"  # Reliable speed test server
+TEST_URL            = "http://speedtest.tele2.net/10MB.zip"  # Smaller test file
 TEST_URLS_BACKUP    = [  # Fallback URLs if primary fails
-    "http://ipv4.download.thinkbroadband.com/100MB.zip",
-    "http://speedtest.tele2.net/100MB.zip"
+    "http://ipv4.download.thinkbroadband.com/5MB.zip",
+    "http://speedtest.ftp.otenet.gr/files/test5Mb.db"
 ]
-CHUNK_SIZE          = 1048576  # 1MB chunks for better performance measurement
-CHUNK_RANGE         = "bytes=0-10485759"  # First 10 MB
-TIMEOUT             = 15                  # Increased timeout for better reliability
-CONNECT_TIMEOUT     = 5                   # Connection establishment timeout
+CHUNK_SIZE          = 524288   # 512KB chunks for more frequent updates
+CHUNK_RANGE         = "bytes=0-5242880"  # First 5 MB for quicker tests
+TIMEOUT             = 30                  # Longer timeout for slower proxies
+CONNECT_TIMEOUT     = 10                  # More time for SOCKS connection setup
 CONCURRENT_LIMIT    = 512                 # Max simultaneous tasks
 MAX_RETRIES         = 2                   # Retry count for borderline proxies
 HISTORY_MAX_RUNS    = 10                  # Keep last N runs per proxy
 MIN_TESTS_FOR_FAIL  = 3                   # Threshold to consider continuous failures
 
 # PERFORMANCE CUTOFF SETTINGS
-MIN_SCORE_THRESHOLD = 0.75                # Increased minimum score threshold
-MIN_SPEED_THRESHOLD = 1.0                 # Minimum speed in MB/s
-MIN_RESPONSE_RATE   = 80.0               # Minimum response rate percentage
-MIN_PROXIES_COUNT   = 75                  # Minimum number of proxies to include
+MIN_SCORE_THRESHOLD = 0.25                # More lenient score threshold
+MIN_SPEED_THRESHOLD = 0.5                 # Lower minimum speed requirement (500KB/s)
+MIN_RESPONSE_RATE   = 50.0                # Lower response rate requirement
+MIN_PROXIES_COUNT   = 50                  # Reduced minimum proxy count
 
 # PRE-SCREENING SETTINGS
-PRE_SCREEN_URL      = "http://httpbin.org/ip"  # Lightweight test URL
-PRE_SCREEN_TIMEOUT  = 5                   # Quick timeout for pre-screening
-PRE_SCREEN_CONCURRENT = 512               # Concurrent limit for pre-screening
+PRE_SCREEN_URL      = "http://ip-api.com/json/"  # Alternative IP check service
+PRE_SCREEN_TIMEOUT  = 10                  # Increased pre-screening timeout
+PRE_SCREEN_CONCURRENT = 256               # Reduced concurrent connections
 
 # GLOBAL RESULTS
 good, bad = [], []
@@ -141,11 +141,12 @@ async def try_proxy(session, proxy: str, scheme: str) -> tuple:
                     # Calculate final score incorporating speed, latency, and stability
                     score = (speed * stability) / (latency + 0.01)
                     
-                    if speed >= MIN_SPEED_THRESHOLD:
+                    # More lenient speed check
+                    if speed >= MIN_SPEED_THRESHOLD or (score >= MIN_SCORE_THRESHOLD and stability >= 0.5):
                         good.append(proxy)
                         return proxy, scheme, latency, speed, score, True
                     else:
-                        raise Exception(f"Speed below threshold: {speed:.2f} MB/s")
+                        raise Exception(f"Performance below threshold: speed={speed:.2f}MB/s score={score:.2f}")
 
         except Exception as e:
             if attempt == MAX_RETRIES:
