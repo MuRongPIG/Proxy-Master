@@ -2,13 +2,9 @@ name: Get Proxy Task
 
 on:
   workflow_dispatch:
-  w      - name: Commit and push if changed
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add http.txt socks4.txt socks5.txt ProxyList.csv
-          git status
-          git diff --cached --quiet || git commit -m "Update proxies ($(date '+%F %H:%M %Z'))"_call:
+  workflow_call:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
 
 permissions:
   contents: write
@@ -60,25 +56,23 @@ jobs:
 
       - name: Commit changes if any
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add http.txt socks4.txt socks5.txt ProxyList.csv TestProxySheet.csv
+          git add http.txt socks4.txt socks5.txt ProxyList.csv
           git status
           git diff --cached --quiet || git commit -m "Update proxies ($(date '+%F %H:%M %Z'))"
 
       - name: Git status after commit
         run: git status
 
-      - name: Sync branch before push (prefer this run's Output)
+      - name: Sync branch before push
         run: |
-          set -e
           git fetch origin main
           # merge instead of rebase to avoid conflicts on generated files
           git -c pull.rebase=false pull --strategy=recursive -X ours origin main || true
 
       - name: Push changes
         run: |
-          set -e
           # no-op if nothing to push
           git diff --quiet && git diff --staged --quiet && exit 0
           git push --force-with-lease
