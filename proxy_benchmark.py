@@ -1,12 +1,17 @@
-import sys
-if sys.platform.startswith("win"):
-    import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+#!/usr/bin/env python3
+"""
+Proxy Benchmark Script
+Tests proxy performance and reliability for MegaBasterd downloads.
+"""
 
-import aiohttp
-import asyncio
-import csv
+import sys
 import os
+import csv
+import asyncio
+import aiohttp
+
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from time import perf_counter, time
 from tqdm.asyncio import tqdm
 from collections import defaultdict, deque
@@ -134,6 +139,9 @@ async def try_proxy(session, proxy: str, scheme: str) -> tuple:
                     if speed >= MIN_SPEED_THRESHOLD:
                         good.append(proxy)
                         return proxy, scheme, latency, speed, score, True
+                    else:
+                        raise Exception(f"Speed below threshold: {speed:.2f} MB/s")
+
         except Exception as e:
             if attempt == MAX_RETRIES:
                 bad.append(proxy)
@@ -247,14 +255,9 @@ def save_history(history):
 
 def save_mb_proxies(sorted_rows):
     """Save the best performing proxies to MBProxies.txt in IP:port format."""
-    # Filter proxies based on performance criteria
     qualified_proxies = []
     
     for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted_rows:
-        # Only include proxies that:
-        # 1. Have a current score above threshold
-        # 2. Have a good response rate
-        # 3. Actually succeeded in the current test (have latency and speed data)
         if (sc >= MIN_SCORE_THRESHOLD and 
             rr >= MIN_RESPONSE_RATE and 
             lat is not None and spd is not None):
@@ -264,68 +267,46 @@ def save_mb_proxies(sorted_rows):
         print("Warning: No proxies met the quality criteria!")
         return 0
     
-    # Sort by score (best to worst)
     qualified_proxies.sort(key=lambda x: x[1], reverse=True)
-    
-    # Smart fallback approach: ensure minimum count while prioritizing quality
     total_qualified = len(qualified_proxies)
     
     if total_qualified >= MIN_PROXIES_COUNT:
-        # We have enough qualified proxies, use only the qualified ones
         final_proxies = qualified_proxies
         print(f"Found {total_qualified} qualified proxies (above minimum {MIN_PROXIES_COUNT})")
         print(f"Including all {total_qualified} qualified proxies")
     else:
-        # We don't have enough qualified proxies, need to include some fallback proxies
         print(f"Only {total_qualified} proxies met quality criteria (below minimum {MIN_PROXIES_COUNT})")
         print(f"Adding fallback proxies to reach minimum {MIN_PROXIES_COUNT}")
         
-        # Start with all qualified proxies
         final_proxies = qualified_proxies.copy()
-        
-        # Find additional proxies that succeeded in testing but didn't meet quality thresholds
         fallback_proxies = []
         for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted_rows:
-            # Include proxies that succeeded in testing (have latency/speed data) but don't meet quality thresholds
-            if (proxy not in [p[0] for p in final_proxies] and  # Not already included
-                lat is not None and spd is not None):  # Succeeded in current test
+            if proxy not in [p[0] for p in final_proxies] and lat is not None and spd is not None:
                 fallback_proxies.append((proxy, sc))
         
-        # Sort fallback proxies by score (best to worst)
         fallback_proxies.sort(key=lambda x: x[1], reverse=True)
-        
-        # Add fallback proxies until we reach the minimum
         needed_fallback = MIN_PROXIES_COUNT - total_qualified
         fallback_to_add = fallback_proxies[:needed_fallback]
-        
         final_proxies.extend(fallback_to_add)
         
         print(f"Added {len(fallback_to_add)} fallback proxies (total: {len(final_proxies)})")
-        print(f"Fallback proxies don't meet strict quality criteria but succeeded in testing")
     
-    # Save to MBProxies.txt (IP:port format only)
     with open(MB_PROXIES_FILE, "w") as f:
-        for proxy, score in final_proxies:
+        for proxy, _ in final_proxies:
             f.write(f"{proxy}\n")
     
     print(f"Saved {len(final_proxies)} proxies to {MB_PROXIES_FILE}")
-    print(f"Quality criteria: Score >= {MIN_SCORE_THRESHOLD}, Response rate >= {MIN_RESPONSE_RATE}%")
-    print(f"Result: {len(final_proxies)} proxies included (ensuring minimum {MIN_PROXIES_COUNT})")
-    
     return len(final_proxies)
 
 def save_all_proxies(sorted_rows):
     """Save all tested proxies to MBProxiesAll.txt in order of performance."""
-    # Filter out completely failed proxies (those with no latency/speed data)
     working_proxies = []
     for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted_rows:
-        if lat is not None and spd is not None:  # Proxy worked at least once
+        if lat is not None and spd is not None:
             working_proxies.append((proxy, sc))
     
-    # Sort all working proxies by score
     working_proxies.sort(key=lambda x: x[1], reverse=True)
     
-    # Save to MBProxiesAll.txt
     with open(MB_PROXIES_ALL_FILE, "w") as f:
         for proxy, _ in working_proxies:
             f.write(f"{proxy}\n")
@@ -337,30 +318,27 @@ async def main():
     print("Starting proxy benchmark...")
     print(f"Loading proxies from: {PROXY_FILE_HTTP}, {PROXY_FILE_SOCKS5}, {PROXY_FILE_SOCKS4}")
     
-    # Ensure output directory exists
     ensure_output_directory()
     
     t0 = perf_counter()
-    http_list   = load_proxies(PROXY_FILE_HTTP)
+    http_list = load_proxies(PROXY_FILE_HTTP)
     socks5_list = load_proxies(PROXY_FILE_SOCKS5)
     socks4_list = load_proxies(PROXY_FILE_SOCKS4)
 
     total_proxies = len(http_list) + len(socks5_list) + len(socks4_list)
     if total_proxies == 0:
-        print("No proxies found! Make sure getproxy.py has been run first.")
+        print("No proxies found! Make sure proxy files exist and are not empty.")
         return
-    
+
     print(f"Loaded {len(http_list)} HTTP, {len(socks5_list)} SOCKS5, {len(socks4_list)} SOCKS4 proxies")
     print(f"Total proxies loaded: {total_proxies}")
 
-    # Remove duplicate IP:port combinations
     http_list, socks5_list, socks4_list = remove_duplicates(http_list, socks5_list, socks4_list)
     
     total_proxies_after_dedup = len(http_list) + len(socks5_list) + len(socks4_list)
     print(f"After removing duplicates: {len(http_list)} HTTP, {len(socks5_list)} SOCKS5, {len(socks4_list)} SOCKS4 proxies")
     print(f"Total proxies after deduplication: {total_proxies_after_dedup}")
 
-    # Pre-screen proxies to filter out dead ones
     print("\n=== PRE-SCREENING PHASE ===")
     http_proxies_to_test = await pre_screen_proxies(http_list, "http")
     socks5_proxies_to_test = await pre_screen_proxies(socks5_list, "socks5")
@@ -377,30 +355,29 @@ async def main():
 
     all_results = []
     if http_proxies_to_test:
-        all_results += await run_tests(http_proxies_to_test, "http")
+        all_results.extend(await run_tests(http_proxies_to_test, "http"))
     if socks5_proxies_to_test:
-        all_results += await run_tests(socks5_proxies_to_test, "socks5")
+        all_results.extend(await run_tests(socks5_proxies_to_test, "socks5"))
     if socks4_proxies_to_test:
-        all_results += await run_tests(socks4_proxies_to_test, "socks4")
+        all_results.extend(await run_tests(socks4_proxies_to_test, "socks4"))
 
     history = load_history()
     for proxy, scheme, lat, spd, sc, success in all_results:
         history[proxy].append((sc, success))
     save_history(history)
 
-    # Prepare CSV rows
     rows = []
     for proxy, scheme, lat, spd, sc, success in all_results:
-        entries = list(history[proxy])
-        lt = sum(score for score, _ in entries) / len(entries) if entries else sc
-        rr = sum(1 for _, succ in entries if succ)/len(entries)*100 if entries else (100.0 if success else 0.0)
-        ss = [score for score, succ in entries if succ]
-        ra = sum(ss)/len(ss) if ss else 0.0
-        rows.append((proxy, scheme, lat, spd, sc, lt, rr, ra))
+        if success or lat is not None:  # Only include working proxies
+            entries = list(history[proxy])
+            lt = sum(score for score, _ in entries) / len(entries) if entries else sc
+            rr = sum(1 for _, succ in entries if succ)/len(entries)*100 if entries else (100.0 if success else 0.0)
+            ss = [score for score, succ in entries if succ]
+            ra = sum(ss)/len(ss) if ss else (sc if success else 0.0)
+            rows.append((proxy, scheme, lat, spd, sc, lt, rr, ra))
 
     sorted_rows = sorted(rows, key=lambda r: r[5], reverse=True)
 
-    # Save detailed CSV results
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -417,20 +394,18 @@ async def main():
                 f"{rr:.1f}", f"{ra:.2f}"
             ])
 
-    # Save MBProxies.txt with best performing proxies
     mb_proxies_count = save_mb_proxies(sorted_rows)
-
-    # Save MBProxiesAll.txt with all working proxies
-    save_all_proxies(sorted_rows)
+    working_proxies_count = save_all_proxies(sorted_rows)
 
     elapsed = perf_counter() - t0
     print(f"\n=== BENCHMARK SUMMARY ===")
     print(f"Total time: {elapsed:.2f}s")
     print(f"Original proxies: {total_proxies}")
     print(f"After deduplication: {total_proxies_after_dedup}")
-    print(f"Pre-screening: Filtered {total_proxies_after_dedup - len(all_proxies_to_test)} dead proxies from {total_proxies_after_dedup} total")
+    print(f"Pre-screening: Filtered {total_proxies_after_dedup - len(all_proxies_to_test)} dead proxies")
     print(f"Performance testing: {len(good)} good, {len(bad)} bad")
     print(f"Qualified proxies: {mb_proxies_count} → {MB_PROXIES_FILE}")
+    print(f"Working proxies: {working_proxies_count} → {MB_PROXIES_ALL_FILE}")
     print(f"Detailed results: {CSV_FILE}")
     print(f"Proxy history: {HISTORY_FILE}")
     print(f"All output files are now saved to the '{OUTPUT_DIR}' folder")
