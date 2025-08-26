@@ -97,6 +97,8 @@ async def pre_screen_proxies(proxies: list, scheme: str) -> list:
                 responsive_proxies.append(proxy)
     
     print(f"Pre-screening complete: {len(responsive_proxies)}/{len(proxies)} {scheme.upper()} proxies are responsive")
+    if not responsive_proxies:
+        print(f"Warning: No responsive {scheme.upper()} proxies found in pre-screening.")
     return responsive_proxies
 
 async def try_proxy(session, proxy: str, scheme: str) -> tuple:
@@ -409,6 +411,20 @@ async def main():
     print(f"After deduplication: {total_proxies_after_dedup}")
     print(f"Pre-screening: Filtered {total_proxies_after_dedup - len(all_proxies_to_test)} dead proxies")
     print(f"Performance testing: {len(good)} good, {len(bad)} bad")
+    if not sorted_rows:
+        print("Warning: No proxies passed performance tests. Writing empty results.")
+        with open(MB_PROXIES_FILE, "w") as f:
+            f.write("# No proxies passed performance tests\n")
+        with open(MB_PROXIES_ALL_FILE, "w") as f:
+            f.write("# No proxies passed performance tests\n")
+        with open(CSV_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "Proxy","Protocol","Latency (s)","Speed (MB/s)",
+                "Current Score","Long-Term Score",
+                "Response Rate (%)","Response AVG"
+            ])
+        return
     print(f"Qualified proxies: {mb_proxies_count} → {MB_PROXIES_FILE}")
     print(f"Working proxies: {working_proxies_count} → {MB_PROXIES_ALL_FILE}")
     print(f"Detailed results: {CSV_FILE}")
