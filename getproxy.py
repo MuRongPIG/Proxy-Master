@@ -542,13 +542,13 @@ class DownloadProxies:
         with csv_path.open('w', newline='', encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(["HTTP Proxies", "Socks4 Proxies", "Socks5 Proxies",
-                             "HTTP Count", "Socks4 Count", "Socks5 Count", "Timestamp"])
+                             "HTTP Count", "Socks4 Count", "Socks5 Count", "Timestamp"]) 
             writer.writerow(["", "", "", counts["http"], counts["socks4"], counts["socks5"], now])
 
             max_len = max(counts.values()) if counts else 0
-            http_list = sorted(self.proxy_dict["http"])
-            socks4_list = sorted(self.proxy_dict["socks4"])
-            socks5_list = sorted(self.proxy_dict["socks5"])
+            http_list = sorted(self.proxy_dict["http"]) 
+            socks4_list = sorted(self.proxy_dict["socks4"]) 
+            socks5_list = sorted(self.proxy_dict["socks5"]) 
 
             for i in range(max_len):
                 row = [
