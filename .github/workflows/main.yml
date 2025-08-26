@@ -15,11 +15,21 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo on main
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          ref: main   # avoid detached HEAD
+          fetch-depth: 1  # Shallow clone
+          ref: main
+          path: .
+          sparse-checkout: false
+          set-safe-directory: true
+          persist-credentials: true
+
+      - name: Setup git
+        run: |
+          git config --global init.defaultBranch main
+          git branch -m main || true
+          git symbolic-ref HEAD refs/heads/main
 
       - name: Setup Python
         uses: actions/setup-python@v5
