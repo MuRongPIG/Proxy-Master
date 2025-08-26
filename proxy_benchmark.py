@@ -19,17 +19,27 @@ OUTPUT_DIR          = "Output"
 CSV_FILE            = os.path.join(OUTPUT_DIR, "proxy_benchmark_results.csv")
 HISTORY_FILE        = os.path.join(OUTPUT_DIR, "proxy_history.csv")
 MB_PROXIES_FILE     = os.path.join(OUTPUT_DIR, "MBProxies.txt")
+MB_PROXIES_ALL_FILE = os.path.join(OUTPUT_DIR, "MBProxiesAll.txt")
 
-TEST_URL            = "http://ipv4.download.thinkbroadband.com/100MB.zip"
-CHUNK_RANGE         = "bytes=0-10485759"  # first 10 MB
-TIMEOUT             = 10                  # seconds
-CONCURRENT_LIMIT    = 512                 # max simultaneous tasks
-HISTORY_MAX_RUNS    = 10                  # keep last N runs per proxy
-MIN_TESTS_FOR_FAIL  = 3                   # threshold to consider continuous failures
+# TEST SETTINGS - Optimized for sustained download performance
+TEST_URL            = "https://speed.hetzner.de/100MB.bin"  # Reliable speed test server
+TEST_URLS_BACKUP    = [  # Fallback URLs if primary fails
+    "http://ipv4.download.thinkbroadband.com/100MB.zip",
+    "http://speedtest.tele2.net/100MB.zip"
+]
+CHUNK_SIZE          = 1048576  # 1MB chunks for better performance measurement
+CHUNK_RANGE         = "bytes=0-10485759"  # First 10 MB
+TIMEOUT             = 15                  # Increased timeout for better reliability
+CONNECT_TIMEOUT     = 5                   # Connection establishment timeout
+CONCURRENT_LIMIT    = 512                 # Max simultaneous tasks
+MAX_RETRIES         = 2                   # Retry count for borderline proxies
+HISTORY_MAX_RUNS    = 10                  # Keep last N runs per proxy
+MIN_TESTS_FOR_FAIL  = 3                   # Threshold to consider continuous failures
 
 # PERFORMANCE CUTOFF SETTINGS
-MIN_SCORE_THRESHOLD = 0.5                 # Minimum score to be considered "good"
-MIN_RESPONSE_RATE   = 1.0                # Minimum response rate percentage
+MIN_SCORE_THRESHOLD = 0.75                # Increased minimum score threshold
+MIN_SPEED_THRESHOLD = 1.0                 # Minimum speed in MB/s
+MIN_RESPONSE_RATE   = 80.0               # Minimum response rate percentage
 MIN_PROXIES_COUNT   = 75                  # Minimum number of proxies to include
 
 # PRE-SCREENING SETTINGS
@@ -87,26 +97,49 @@ async def pre_screen_proxies(proxies: list, scheme: str) -> list:
 async def try_proxy(session, proxy: str, scheme: str) -> tuple:
     proxy_url = f"{scheme}://{proxy}"
     headers   = {"Range": CHUNK_RANGE}
-    try:
-        async with sem:
-            start = perf_counter()
-            async with session.get(TEST_URL, headers=headers, proxy=proxy_url, timeout=TIMEOUT) as resp:
-                if resp.status not in (200, 206):
-                    raise Exception(f"HTTP {resp.status}")
-                total = 0
-                async for chunk in resp.content.iter_chunked(65536):
-                    total += len(chunk)
-                    if total >= 10 * 1024 * 1024:
-                        break
-                elapsed = perf_counter() - start
-                speed   = total / elapsed / 1024 / 1024
-                latency = elapsed
-                score   = speed / (latency + 0.01)
-                good.append(proxy)
-                return proxy, scheme, latency, speed, score, True
-    except Exception:
-        bad.append(proxy)
-        return proxy, scheme, None, None, 0.0, False
+    
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            async with sem:
+                start = perf_counter()
+                async with session.get(TEST_URL, headers=headers, proxy=proxy_url,
+                                    timeout=aiohttp.ClientTimeout(total=TIMEOUT,
+                                                               connect=CONNECT_TIMEOUT)) as resp:
+                    if resp.status not in (200, 206):
+                        raise Exception(f"HTTP {resp.status}")
+                    
+                    total = 0
+                    chunk_times = []
+                    last_chunk_time = perf_counter()
+                    
+                    async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                        now = perf_counter()
+                        chunk_times.append(now - last_chunk_time)
+                        last_chunk_time = now
+                        total += len(chunk)
+                        if total >= 10 * 1024 * 1024:
+                            break
+                    
+                    elapsed = perf_counter() - start
+                    speed = total / elapsed / 1024 / 1024
+                    latency = elapsed
+                    
+                    # Calculate stability score based on chunk timing consistency
+                    avg_chunk_time = sum(chunk_times) / len(chunk_times)
+                    stability = sum(1 for t in chunk_times if abs(t - avg_chunk_time) < 0.5) / len(chunk_times)
+                    
+                    # Calculate final score incorporating speed, latency, and stability
+                    score = (speed * stability) / (latency + 0.01)
+                    
+                    if speed >= MIN_SPEED_THRESHOLD:
+                        good.append(proxy)
+                        return proxy, scheme, latency, speed, score, True
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                bad.append(proxy)
+                return proxy, scheme, None, None, 0.0, False
+            await asyncio.sleep(0.5)  # Brief pause before retry
+            continue
 
 async def run_tests(proxies: list, scheme: str):
     connector = aiohttp.TCPConnector(ssl=False, limit=None)
@@ -281,6 +314,25 @@ def save_mb_proxies(sorted_rows):
     
     return len(final_proxies)
 
+def save_all_proxies(sorted_rows):
+    """Save all tested proxies to MBProxiesAll.txt in order of performance."""
+    # Filter out completely failed proxies (those with no latency/speed data)
+    working_proxies = []
+    for proxy, scheme, lat, spd, sc, lt, rr, ra in sorted_rows:
+        if lat is not None and spd is not None:  # Proxy worked at least once
+            working_proxies.append((proxy, sc))
+    
+    # Sort all working proxies by score
+    working_proxies.sort(key=lambda x: x[1], reverse=True)
+    
+    # Save to MBProxiesAll.txt
+    with open(MB_PROXIES_ALL_FILE, "w") as f:
+        for proxy, _ in working_proxies:
+            f.write(f"{proxy}\n")
+    
+    print(f"Saved {len(working_proxies)} working proxies to {MB_PROXIES_ALL_FILE}")
+    return len(working_proxies)
+
 async def main():
     print("Starting proxy benchmark...")
     print(f"Loading proxies from: {PROXY_FILE_HTTP}, {PROXY_FILE_SOCKS5}, {PROXY_FILE_SOCKS4}")
@@ -367,6 +419,9 @@ async def main():
 
     # Save MBProxies.txt with best performing proxies
     mb_proxies_count = save_mb_proxies(sorted_rows)
+
+    # Save MBProxiesAll.txt with all working proxies
+    save_all_proxies(sorted_rows)
 
     elapsed = perf_counter() - t0
     print(f"\n=== BENCHMARK SUMMARY ===")
