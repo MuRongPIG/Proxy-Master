@@ -29,9 +29,9 @@ jobs:
 
       - name: Setup git
         run: |
-          git config --global init.defaultBranch main
-          git branch -m main || true
-          git symbolic-ref HEAD refs/heads/main
+          git config pull.rebase false
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -65,14 +65,7 @@ jobs:
       - name: Git status after commit
         run: git status
 
-      - name: Sync branch before push
-        run: |
-          git fetch origin main
-          # merge instead of rebase to avoid conflicts on generated files
-          git -c pull.rebase=false pull --strategy=recursive -X ours origin main || true
-
       - name: Push changes
         run: |
-          # no-op if nothing to push
-          git diff --quiet && git diff --staged --quiet && exit 0
-          git push --force-with-lease
+          # Always attempt to push since we know we have changes
+          git push origin main --force
