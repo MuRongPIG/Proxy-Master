@@ -27,31 +27,32 @@ HISTORY_FILE        = os.path.join(OUTPUT_DIR, "proxy_history.csv")
 MB_PROXIES_FILE     = os.path.join(OUTPUT_DIR, "MBProxies.txt")
 MB_PROXIES_ALL_FILE = os.path.join(OUTPUT_DIR, "MBProxiesAll.txt")
 
-# TEST SETTINGS - Optimized for sustained download performance
-TEST_URL            = "http://speedtest.tele2.net/10MB.zip"  # Smaller test file
+# TEST SETTINGS - Optimized for quick performance checks
+TEST_URL            = "http://speedtest.tele2.net/1MB.zip"  # Use smaller 1MB test file
 TEST_URLS_BACKUP    = [  # Fallback URLs if primary fails
-    "http://ipv4.download.thinkbroadband.com/5MB.zip",
-    "http://speedtest.ftp.otenet.gr/files/test5Mb.db"
+    "http://speedtest.ftp.otenet.gr/files/test1Mb.db",
+    "http://ipv4.download.thinkbroadband.com/1MB.zip"
 ]
-CHUNK_SIZE          = 524288   # 512KB chunks for more frequent updates
-CHUNK_RANGE         = "bytes=0-5242880"  # First 5 MB for quicker tests
-TIMEOUT             = 30                  # Longer timeout for slower proxies
-CONNECT_TIMEOUT     = 10                  # More time for SOCKS connection setup
-CONCURRENT_LIMIT    = 512                 # Max simultaneous tasks
+CHUNK_SIZE          = 131072   # 128KB chunks for quicker assessment
+CHUNK_RANGE         = "bytes=0-1048576"  # First 1 MB only
+TIMEOUT             = 15                  # Shorter timeout
+CONNECT_TIMEOUT     = 5                   # Shorter connection timeout
+CONCURRENT_LIMIT    = 1024                 # Reduced concurrent tasks
 MAX_RETRIES         = 2                   # Retry count for borderline proxies
 HISTORY_MAX_RUNS    = 10                  # Keep last N runs per proxy
 MIN_TESTS_FOR_FAIL  = 3                   # Threshold to consider continuous failures
 
 # PERFORMANCE CUTOFF SETTINGS
-MIN_SCORE_THRESHOLD = 0.25                # More lenient score threshold
-MIN_SPEED_THRESHOLD = 0.5                 # Lower minimum speed requirement (500KB/s)
-MIN_RESPONSE_RATE   = 50.0                # Lower response rate requirement
-MIN_PROXIES_COUNT   = 50                  # Reduced minimum proxy count
+MIN_SCORE_THRESHOLD = 0.1                 # Very lenient score threshold
+MIN_SPEED_THRESHOLD = 0.1                # Minimum 250KB/s
+MIN_RESPONSE_RATE   = 0.01                # Lower response rate requirement
+MIN_PROXIES_COUNT   = 75                  # Minimum proxies to keep
 
 # PRE-SCREENING SETTINGS
-PRE_SCREEN_URL      = "http://ip-api.com/json/"  # Alternative IP check service
-PRE_SCREEN_TIMEOUT  = 10                  # Increased pre-screening timeout
-PRE_SCREEN_CONCURRENT = 256               # Reduced concurrent connections
+PRE_SCREEN_TIMEOUT  = 10                  # Quick pre-screening timeout
+PRE_SCREEN_CONCURRENT = 512               # Increased concurrent prescreening
+MAX_BATCH_SIZE = 2000                     # Smaller batches for faster processing
+VERIFY_SSL = False                        # Skip SSL verification
 
 # GLOBAL RESULTS
 good, bad = [], []
@@ -65,27 +66,71 @@ def ensure_output_directory():
         print(f"Created output directory: {OUTPUT_DIR}")
 
 async def pre_screen_proxy(session, proxy: str, scheme: str) -> tuple:
-    """Quick connectivity test to filter out dead proxies before performance testing."""
-    proxy_url = f"{scheme}://{proxy}"
+    """Quick connectivity test with fallback URLs and proper SOCKS handling."""
+    # Handle IP:PORT format validation
     try:
-        async with pre_screen_sem:
-            timeout = aiohttp.ClientTimeout(total=PRE_SCREEN_TIMEOUT)
-            async with session.get(PRE_SCREEN_URL, proxy=proxy_url, timeout=timeout) as resp:
-                if resp.status == 200:
-                    return proxy, scheme, True
-                else:
-                    return proxy, scheme, False
-    except Exception:
+        host, port = proxy.split(':')
+        port = int(port)
+        if not (0 < port < 65536):
+            return proxy, scheme, False
+    except (ValueError, TypeError):
         return proxy, scheme, False
+
+    proxy_url = f"{scheme}://{proxy}"
+    check_urls = [
+        "http://icanhazip.com",
+        "http://ifconfig.me/ip",
+        "http://ident.me",
+        "http://api.ipify.org"
+    ]
+    
+    for url in check_urls:
+        try:
+            async with pre_screen_sem:
+                async with session.get(
+                    url, 
+                    proxy=proxy_url,
+                    timeout=aiohttp.ClientTimeout(total=PRE_SCREEN_TIMEOUT, connect=CONNECT_TIMEOUT),
+                    ssl=False
+                ) as resp:
+                    if resp.status == 200:
+                        return proxy, scheme, True
+        except Exception:
+            continue
+    return proxy, scheme, False
 
 async def pre_screen_proxies(proxies: list, scheme: str) -> list:
     """Pre-screen proxies to filter out dead ones before performance testing."""
     print(f"Pre-screening {len(proxies)} {scheme.upper()} proxies...")
+    
+    # Process large lists in batches
+    if len(proxies) > MAX_BATCH_SIZE:
+        print(f"Large proxy list detected, processing in batches of {MAX_BATCH_SIZE}")
+        responsive_proxies = []
+        for i in range(0, len(proxies), MAX_BATCH_SIZE):
+            batch = proxies[i:i + MAX_BATCH_SIZE]
+            print(f"\nProcessing batch {i//MAX_BATCH_SIZE + 1}/{(len(proxies) + MAX_BATCH_SIZE - 1)//MAX_BATCH_SIZE}")
+            batch_results = await _pre_screen_batch(batch, scheme)
+            responsive_proxies.extend(batch_results)
+        return responsive_proxies
+    
+    return await _pre_screen_batch(proxies, scheme)
+
+async def _pre_screen_batch(proxies: list, scheme: str) -> list:
+    """Pre-screen a batch of proxies."""
     if scheme.startswith("socks"):
-        connector = ProxyConnector.from_url(f"{scheme}://127.0.0.1:0")  # Dummy, actual proxy set per request
+        connector = ProxyConnector(
+            proxy_type=scheme,
+            host='127.0.0.1',
+            port=1080,
+            rdns=True,
+            limit=50,
+            force_close=True,
+            enable_cleanup_closed=True
+        )
     else:
         connector = aiohttp.TCPConnector(ssl=False, limit=None)
-    timeout = aiohttp.ClientTimeout(total=PRE_SCREEN_TIMEOUT)
+    timeout = aiohttp.ClientTimeout(total=PRE_SCREEN_TIMEOUT, connect=CONNECT_TIMEOUT)
     
     responsive_proxies = []
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -106,15 +151,22 @@ async def pre_screen_proxies(proxies: list, scheme: str) -> list:
 
 async def try_proxy(session, proxy: str, scheme: str) -> tuple:
     proxy_url = f"{scheme}://{proxy}"
-    headers   = {"Range": CHUNK_RANGE}
+    headers = {
+        "Range": CHUNK_RANGE,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
     
     for attempt in range(MAX_RETRIES + 1):
         try:
             async with sem:
                 start = perf_counter()
-                async with session.get(TEST_URL, headers=headers, proxy=proxy_url,
-                                    timeout=aiohttp.ClientTimeout(total=TIMEOUT,
-                                                               connect=CONNECT_TIMEOUT)) as resp:
+                async with session.get(
+                    TEST_URL, 
+                    headers=headers, 
+                    proxy=proxy_url,
+                    timeout=aiohttp.ClientTimeout(total=TIMEOUT, connect=CONNECT_TIMEOUT),
+                    ssl=False
+                ) as resp:
                     if resp.status not in (200, 206):
                         raise Exception(f"HTTP {resp.status}")
                     
@@ -127,7 +179,7 @@ async def try_proxy(session, proxy: str, scheme: str) -> tuple:
                         chunk_times.append(now - last_chunk_time)
                         last_chunk_time = now
                         total += len(chunk)
-                        if total >= 10 * 1024 * 1024:
+                        if total >= 1024 * 1024:  # Stop after 1MB
                             break
                     
                     elapsed = perf_counter() - start
@@ -157,12 +209,19 @@ async def try_proxy(session, proxy: str, scheme: str) -> tuple:
 
 async def run_tests(proxies: list, scheme: str):
     if scheme.startswith("socks"):
-        connector = ProxyConnector.from_url(f"{scheme}://127.0.0.1:0")  # Dummy, actual proxy set per request
+        connector = ProxyConnector(
+            proxy_type=scheme,
+            host='127.0.0.1',
+            port=1080,
+            rdns=True,
+            ssl=False,
+            verify_ssl=False
+        )
     else:
         connector = aiohttp.TCPConnector(ssl=False, limit=None)
-    timeout   = aiohttp.ClientTimeout(total=TIMEOUT)
+    timeout   = aiohttp.ClientTimeout(total=TIMEOUT, connect=CONNECT_TIMEOUT)
     results   = []
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout, trust_env=True) as session:
         tasks = [try_proxy(session, p, scheme) for p in proxies]
         for future in tqdm(asyncio.as_completed(tasks),
                            total=len(tasks),
