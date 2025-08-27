@@ -4,57 +4,44 @@
 # Features:
 # - Merge + dedupe with optional cross-protocol collapse (socks5 > http > socks4)
 # - Stage A: quick connectivity + tiny read, multi-URL fallback, quick retries
-# - Stage B: capped single-stream throughput sample on the URL that worked
+# - Stage B: capped single-stream throughput sample
 # - Stage C (MEGA mode): multi-stream HTTPS sustained test to simulate MegaBasterd
-# - Remote DNS for SOCKS (socks5h), browser-like headers, retries with jitter
+# - SOCKS5 remote DNS (socks5h), browser-like headers, retries with jitter
+# - HTTPS-proxy fallback for entries in http.txt (try http:// then https:// to the proxy)
 # - CSV/TSV outputs (+ optional gzip), live tqdm progress bar, console summary
-# - CI hardening: safer defaults, start pacing, optional IPv6 skip
-# - Speed profiles: FAST/BALANCED/SLOW preset knobs via SPEED_PROFILE
+# - CI hardening: safer defaults, start pacing, optional IPv6 skip, latency skip
+# - Speed profiles: fast | balanced | slow via SPEED_PROFILE
+# - Optional streaming CSV writer to bound memory; optional SOCKS5→SOCKS4 downgrade
 #
 # Deps:
 #   pip install "httpx[socks]" anyio tqdm
 #
-# Core env (CI-tuned defaults):
-#   INPUT_DIR="."                 OUTPUT_DIR="Output"
-#   TEST_URL="https://cachefly.cachefly.net/10mb.test"
-#   CONNECT_TIMEOUT_S="2.5"       READ_TIMEOUT_S="3.0"    A_SAMPLE_BYTES="20480"
-#   B_SAMPLE_BYTES="384000"       B_MAX_DURATION_S="3.0"
-#   WORKERS="200"                 PER_HOST_LIMIT="24"
-#   THR_WEIGHT="0.001"            LAT_PENALTY="0.25"      ERR_PENALTY="50.0"
-#   MIN_COUNT="75"                SCORE_THRESHOLD="50.0"
-#   SHUFFLE_INPUT="1"             CROSS_PROTO_DEDUP="1"
-#   CSV_NAME="MBProxies.csv"      TSV_NAME="MBProxies.meta.tsv"   CSV_GZIP="0"
-#   A_RETRIES="1"                 B_RETRIES="0"
-#   QUICK_FAIL_S="0.6"            JITTER_S="0.05"         START_JITTER_S="0.02"
-#   MAX_STARTS_PER_SEC="0"        SKIP_IPV6="0"
-#   URLS_HTTP / URLS_HTTPS / URLS_SOCKS  (see defaults below)
+# Key envs (see defaults below):
+#   SPEED_PROFILE, CROSS_PROTO_DEDUP, MEGA_MODE, MEGA_STREAMS, MEGA_BYTES_PER_STREAM,
+#   WORKERS, EFFECTIVE_WORKERS, PER_HOST_LIMIT, MAX_STARTS_PER_SEC, SKIP_IPV6,
+#   LATENCY_SKIP_MS, MAX_THR_BPS, TRY_SOCKS4_DOWNGRADE, HTTP2, NO_PROGRESS,
+#   STREAM_CSV, CSV_GZIP
 #
-# MEGA realism (default off; profiles may enable):
-#   MEGA_MODE="0"
-#   MEGA_STREAMS="2"
-#   MEGA_BYTES_PER_STREAM="2097152"   # 2 MiB
-#   MEGA_MAX_DURATION_S="6.0"
-#   MEGA_URLS="https://cachefly.cachefly.net/10mb.test,https://speed.hetzner.de/10MB.bin"
-#   MEGA_ONLY_HTTPS="1"
-#
-# Speed profile:
-#   SPEED_PROFILE="fast"  # fast | balanced | slow
-#   (Profiles only set values you did not explicitly set via env.)
+# Outputs:
+#   Output/MBProxiesAll.txt (ranked), Output/MBProxies.txt (threshold/backfill),
+#   Output/MBProxies.csv(.gz), Output/MBProxies.meta.tsv
 
 import asyncio
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Tuple, Optional, List, Union
+from typing import Dict, Tuple, Optional, List, Union, Iterable
 import ipaddress
 import csv
 import gzip
+import heapq
+import random
 from statistics import median
+from urllib.parse import quote
 
 import httpx
 from tqdm import tqdm
-from urllib.parse import quote
 
 # ------------------------
 # Config (env-overridable)
@@ -105,6 +92,21 @@ START_JITTER_S = float(os.environ.get("START_JITTER_S", "0.02"))
 # Lightweight pacing
 MAX_STARTS_PER_SEC = float(os.environ.get("MAX_STARTS_PER_SEC", "0"))  # 0 disables
 
+# Optional latency-based skip of Stage B
+LATENCY_SKIP_MS = float(os.environ.get("LATENCY_SKIP_MS", "900"))
+
+# Score clipping
+MAX_THR_BPS = float(os.environ.get("MAX_THR_BPS", "5e7"))  # 50 MB/s
+
+# Protocol fallback
+TRY_SOCKS4_DOWNGRADE = os.environ.get("TRY_SOCKS4_DOWNGRADE", "1") == "1"
+
+# Progress tuning
+NO_PROGRESS = os.environ.get("NO_PROGRESS", "0") == "1"
+
+# HTTP/2 toggle
+HTTP2 = os.environ.get("HTTP2", "0") == "1"
+
 # Multi-target URL lists
 def _parse_url_list(env_key: str, default: str) -> List[str]:
     return [u.strip() for u in os.environ.get(env_key, default).split(",") if u.strip()]
@@ -143,7 +145,6 @@ EFFECTIVE_WORKERS = int(os.environ.get(
 SPEED_PROFILE = os.environ.get("SPEED_PROFILE", "fast").lower()
 
 def _apply_speed_profile():
-    # Only set when user didn't explicitly set via env
     def setdefault(name, value):
         if os.environ.get(name) is None:
             globals()[name] = value
@@ -192,6 +193,13 @@ def _apply_speed_profile():
         setdefault("MAX_STARTS_PER_SEC", 90.0)
 
 _apply_speed_profile()
+# Recompute EFFECTIVE_WORKERS if not explicitly set, after profile changes
+if os.environ.get("EFFECTIVE_WORKERS") is None:
+    EFFECTIVE_WORKERS = min(WORKERS, 200) if MEGA_MODE else WORKERS
+# Cap connections when MEGA mode is on (each proxy may open multiple sockets)
+if MEGA_MODE and os.environ.get("EFFECTIVE_WORKERS") is None:
+    per_proxy = 1 + max(1, MEGA_STREAMS)
+    EFFECTIVE_WORKERS = max(50, min(EFFECTIVE_WORKERS, int(0.9 * WORKERS / per_proxy) * per_proxy))
 
 PROTO_PRIORITY = {"socks5": 3, "http": 2, "socks4": 1}
 
@@ -257,49 +265,51 @@ def load_and_dedupe() -> Union[
         merged: Dict[Tuple[str, int], Tuple[str, Optional[str], Optional[str]]] = {}
         for proto, path in INPUT_FILES.items():
             p = Path(path)
-            if not p.exists():
-                continue
+            if not p.exists(): continue
             seen_in_file = set()
-            for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-                rec = parse_line(line)
-                if not rec:
-                    continue
-                h, pt, user, pw = rec
-                hp = (h, pt)
-                if hp in seen_in_file:
-                    continue
-                seen_in_file.add(hp)
-                if hp not in merged or PROTO_PRIORITY[proto] > PROTO_PRIORITY[ merged[hp][0] ]:
-                    merged[hp] = (proto, user, pw)
+            with p.open("r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    rec = parse_line(line)
+                    if not rec: continue
+                    h, pt, user, pw = rec
+                    hp = (h, pt)
+                    if hp in seen_in_file:
+                        continue
+                    seen_in_file.add(hp)
+                    if hp not in merged or PROTO_PRIORITY[proto] > PROTO_PRIORITY[ merged[hp][0] ]:
+                        merged[hp] = (proto, user, pw)
         return merged
     else:
         merged3: Dict[Tuple[str, int, str], Tuple[Optional[str], Optional[str]]] = {}
         for proto, path in INPUT_FILES.items():
             p = Path(path)
-            if not p.exists():
-                continue
+            if not p.exists(): continue
             seen_in_file = set()
-            for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-                rec = parse_line(line)
-                if not rec:
-                    continue
-                h, pt, user, pw = rec
-                hp = (h, pt)
-                if hp in seen_in_file:
-                    continue
-                seen_in_file.add(hp)
-                merged3[(h, pt, proto)] = (user, pw)
+            with p.open("r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    rec = parse_line(line)
+                    if not rec: continue
+                    h, pt, user, pw = rec
+                    hp = (h, pt)
+                    if hp in seen_in_file:
+                        continue
+                    seen_in_file.add(hp)
+                    merged3[(h, pt, proto)] = (user, pw)
         return merged3
 
-def proxy_url(proto: str, host: str, port: int, user: Optional[str], pw: Optional[str]) -> str:
+def proxy_url_candidates(proto: str, host: str, port: int, user: Optional[str], pw: Optional[str]) -> List[str]:
     auth = ""
     if user is not None:
         auth = f"{quote(user, safe='')}:{quote(pw or '', safe='')}@"
     if proto == "socks5":
-        return f"socks5h://{auth}{host}:{port}"  # remote DNS
+        urls = [f"socks5h://{auth}{host}:{port}"]
+        if TRY_SOCKS4_DOWNGRADE:
+            urls.append(f"socks4://{auth}{host}:{port}")
+        return urls
     if proto == "socks4":
-        return f"socks4://{auth}{host}:{port}"
-    return f"http://{auth}{host}:{port}"
+        return [f"socks4://{auth}{host}:{port}"]
+    # http list can contain HTTPS proxies; try both to the proxy
+    return [f"http://{auth}{host}:{port}", f"https://{auth}{host}:{port}"]
 
 def fmt_hostport(host: str, port: int) -> str:
     if ":" in host and not host.startswith("["):
@@ -320,6 +330,7 @@ def mega_urls() -> List[str]:
     out = MEGA_URLS
     if MEGA_ONLY_HTTPS:
         out = [u for u in out if _is_https(u)]
+    random.shuffle(out)
     return out
 
 # ------------------------
@@ -331,7 +342,6 @@ class StartPacer:
         self.rate = max(0.0, rate_per_sec)
         self._lock = asyncio.Lock()
         self._last = 0.0
-
     async def wait(self):
         if self.rate <= 0:
             return
@@ -362,43 +372,44 @@ class BenchResult:
         self.mega_ok_streams: int = 0
         self.mega_errors: int = 0
     def calc_score(self):
-        if MEGA_MODE and self.mega_thr_bps > 0 and self.latency_ms is not None:
-            self.score = (self.mega_thr_bps * THR_WEIGHT) - (self.latency_ms * LAT_PENALTY) - (self.mega_errors * ERR_PENALTY)
-        elif self.latency_ms is None or self.thr_bps <= 0:
+        eff_thr = min(self.mega_thr_bps if (MEGA_MODE and self.mega_thr_bps > 0) else self.thr_bps, MAX_THR_BPS)
+        if (MEGA_MODE and self.mega_thr_bps > 0 and self.latency_ms is not None):
+            self.score = (eff_thr * THR_WEIGHT) - (self.latency_ms * LAT_PENALTY) - (self.mega_errors * ERR_PENALTY)
+        elif self.latency_ms is None or eff_thr <= 0:
             self.score = -1e9
         else:
-            self.score = (self.thr_bps * THR_WEIGHT) - (self.latency_ms * LAT_PENALTY)
+            self.score = (eff_thr * THR_WEIGHT) - (self.latency_ms * LAT_PENALTY)
 
-async def stage_a_quick_check(client: httpx.AsyncClient, proxy: str, proto: str) -> Tuple[bool, Optional[float], Optional[str]]:
-    import random
+async def stage_a_quick_check(client: httpx.AsyncClient, proxies: Iterable[str], proto: str):
     urls = candidate_urls_for(proto)
-    for url in urls:
-        attempts = 1 + max(0, A_RETRIES)
-        for attempt in range(attempts):
-            t0 = time.perf_counter()
-            try:
-                with httpx.Timeout(CONNECT_TIMEOUT_S + READ_TIMEOUT_S):
-                    async with client.stream(
-                        "GET", url,
-                        headers=BROWSER_HEADERS,
-                        timeout=httpx.Timeout(connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=CONNECT_TIMEOUT_S),
-                        proxies=proxy
-                    ) as resp:
-                        if resp.status_code >= 400:
-                            raise httpx.HTTPStatusError("bad status", request=resp.request, response=resp)
-                        total = 0
-                        async for chunk in resp.aiter_bytes():
-                            total += len(chunk)
-                            if total >= A_SAMPLE_BYTES:
-                                latency_ms = (time.perf_counter() - t0) * 1000.0
-                                return True, latency_ms, url
-            except Exception:
-                dt = time.perf_counter() - t0
-                if attempt < attempts - 1 and dt <= QUICK_FAIL_S:
-                    if JITTER_S > 0:
-                        await asyncio.sleep(random.uniform(0, JITTER_S))
-                    continue
-    return False, None, None
+    for pxy in proxies:
+        for url in urls:
+            attempts = 1 + max(0, A_RETRIES)
+            for attempt in range(attempts):
+                t0 = time.perf_counter()
+                try:
+                    with httpx.Timeout(CONNECT_TIMEOUT_S + READ_TIMEOUT_S):
+                        async with client.stream(
+                            "GET", url,
+                            headers=BROWSER_HEADERS,
+                            timeout=httpx.Timeout(connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=CONNECT_TIMEOUT_S),
+                            proxies=pxy
+                        ) as resp:
+                            if resp.status_code >= 400:
+                                raise httpx.HTTPStatusError("bad status", request=resp.request, response=resp)
+                            total = 0
+                            async for chunk in resp.aiter_bytes():
+                                total += len(chunk)
+                                if total >= A_SAMPLE_BYTES:
+                                    latency_ms = (time.perf_counter() - t0) * 1000.0
+                                    return True, latency_ms, url, pxy
+                except Exception:
+                    dt = time.perf_counter() - t0
+                    if attempt < attempts - 1 and dt <= QUICK_FAIL_S:
+                        if JITTER_S > 0:
+                            await asyncio.sleep(random.uniform(0, JITTER_S))
+                        continue
+    return False, None, None, None
 
 async def stage_b_throughput(client: httpx.AsyncClient, proxy: str, url: str) -> float:
     attempts = 1 + max(0, B_RETRIES)
@@ -416,9 +427,7 @@ async def stage_b_throughput(client: httpx.AsyncClient, proxy: str, url: str) ->
                     raise httpx.HTTPStatusError("bad status", request=resp.request, response=resp)
                 async for chunk in resp.aiter_bytes():
                     got += len(chunk)
-                    if got >= B_SAMPLE_BYTES:
-                        break
-                    if (time.perf_counter() - start) >= B_MAX_DURATION_S:
+                    if got >= B_SAMPLE_BYTES or (time.perf_counter() - start) >= B_MAX_DURATION_S:
                         break
         except Exception:
             if attempt < attempts - 1:
@@ -442,9 +451,7 @@ async def _mega_stream(client: httpx.AsyncClient, proxy: str, url: str) -> Tuple
                 return 0, False
             async for chunk in resp.aiter_bytes():
                 got += len(chunk)
-                if got >= MEGA_BYTES_PER_STREAM:
-                    break
-                if (time.perf_counter() - start) >= MEGA_MAX_DURATION_S:
+                if got >= MEGA_BYTES_PER_STREAM or (time.perf_counter() - start) >= MEGA_MAX_DURATION_S:
                     break
         return got, True if got > 0 else False
     except Exception:
@@ -464,8 +471,27 @@ async def stage_c_mega(client: httpx.AsyncClient, proxy: str, proto: str) -> Tup
     errors = len(results) - ok_streams
     return total_bytes / dur, ok_streams, errors
 
-async def worker(queue: asyncio.Queue, results: List["BenchResult"], client: httpx.AsyncClient, pbar: tqdm, pacer: StartPacer):
-    import random
+# Streaming CSV writer (optional)
+async def csv_writer_task(q: "asyncio.Queue[Optional[List]]", path: Path, header: List[str], meta: str, gzip_enabled: bool):
+    if gzip_enabled:
+        f = gzip.open(path, "wt", newline="", encoding="utf-8")
+    else:
+        f = path.open("w", newline="", encoding="utf-8")
+    try:
+        f.write(meta + "\n")
+        w = csv.writer(f); w.writerow(header)
+        while True:
+            row = await q.get()
+            if row is None:
+                q.task_done()
+                break
+            w.writerow(row)
+            q.task_done()
+    finally:
+        f.close()
+
+async def worker(queue: asyncio.Queue, results: List["BenchResult"], client: httpx.AsyncClient,
+                 pbar: tqdm, pacer: StartPacer, csv_q: Optional[asyncio.Queue]):
     while True:
         item = await queue.get()
         if item is None:
@@ -479,16 +505,19 @@ async def worker(queue: asyncio.Queue, results: List["BenchResult"], client: htt
             await asyncio.sleep(random.uniform(0, START_JITTER_S))
 
         br = BenchResult(host, port, proto)
-        purl = proxy_url(proto, host, port, user, pw)
+        candidates = proxy_url_candidates(proto, host, port, user, pw)
 
-        ok, latency, url_used = await stage_a_quick_check(client, purl, proto)
-        if ok and latency is not None and url_used:
+        ok, latency, url_used, pxy = await stage_a_quick_check(client, candidates, proto)
+        if ok and latency is not None and url_used and pxy:
             br.latency_ms = latency
-            thr = await stage_b_throughput(client, purl, url_used)
+
+            thr = 0.0
+            if latency <= LATENCY_SKIP_MS:
+                thr = await stage_b_throughput(client, pxy, url_used)
             br.thr_bps = thr
 
             if MEGA_MODE and thr > 0 and (proto == "http" or proto in ("socks5", "socks4")):
-                mega_thr, ok_streams, errs = await stage_c_mega(client, purl, proto)
+                mega_thr, ok_streams, errs = await stage_c_mega(client, pxy, proto)
                 br.mega_thr_bps = mega_thr
                 br.mega_ok_streams = ok_streams
                 br.mega_errors = errs
@@ -496,27 +525,58 @@ async def worker(queue: asyncio.Queue, results: List["BenchResult"], client: htt
             if (MEGA_MODE and br.mega_thr_bps > 0) or (not MEGA_MODE and thr > 0):
                 br.ok = True
                 br.calc_score()
+            else:
+                br.calc_score()
+        else:
+            br.calc_score()
 
         results.append(br)
+        if csv_q is not None:
+            csv_q.put_nowait([
+                br.host, br.port, br.proto, int(br.ok),
+                0 if br.latency_ms is None else round(br.latency_ms, 3),
+                round(br.thr_bps, 1),
+                round(br.mega_thr_bps, 1),
+                br.mega_ok_streams,
+                br.mega_errors,
+                round(br.score, 3),
+            ])
         pbar.update(1)
         queue.task_done()
 
 async def run_benchmark(proxies: List[Tuple[str,int,str,Optional[str],Optional[str]]]) -> List["BenchResult"]:
     results: List[BenchResult] = []
     limits = httpx.Limits(max_connections=EFFECTIVE_WORKERS, max_keepalive_connections=PER_HOST_LIMIT)
-    async with httpx.AsyncClient(http2=False, limits=limits, verify=True) as client:
+    async with httpx.AsyncClient(http2=HTTP2, limits=limits, verify=True, trust_env=False) as client:
         q: asyncio.Queue = asyncio.Queue()
         for host, port, proto, user, pw in proxies:
             q.put_nowait((host, port, proto, user, pw))
         for _ in range(EFFECTIVE_WORKERS):
             q.put_nowait(None)
 
+        # Optional streaming CSV setup
+        csv_q: Optional[asyncio.Queue] = None
+        writer_task = None
+        if os.environ.get("STREAM_CSV", "0") == "1":
+            csv_q = asyncio.Queue()
+            csv_path = Path(OUTPUT_DIR) / (CSV_NAME + (".gz" if CSV_GZIP else ""))
+            meta = f"# profile={SPEED_PROFILE}, mega={int(MEGA_MODE)}, workers={WORKERS}, eff={EFFECTIVE_WORKERS}, http2={int(HTTP2)}"
+            header = ["host","port","proto","ok","latency_ms","thr_bps","mega_thr_bps","mega_ok_streams","mega_errors","score"]
+            writer_task = asyncio.create_task(csv_writer_task(csv_q, csv_path, header, meta, CSV_GZIP))
+
         pacer = StartPacer(MAX_STARTS_PER_SEC)
-        with tqdm(total=len(proxies), desc="Benchmarking", unit="proxy", smoothing=0.1, miniters=1) as pbar:
-            tasks = [asyncio.create_task(worker(q, results, client, pbar, pacer)) for _ in range(EFFECTIVE_WORKERS)]
+        with tqdm(total=len(proxies), desc="Benchmarking", unit="proxy",
+                  smoothing=0.1, miniters=1, mininterval=0.2, disable=NO_PROGRESS) as pbar:
+            tasks = [asyncio.create_task(worker(q, results, client, pbar, pacer, csv_q)) for _ in range(EFFECTIVE_WORKERS)]
             await q.join()
             for t in tasks:
                 await t
+
+        if csv_q is not None:
+            await csv_q.put(None)
+            await csv_q.join()
+            if writer_task:
+                await writer_task
     return results
 
 # ------------------------
@@ -551,35 +611,39 @@ def write_outputs(results: List["BenchResult"], duration_s: float, total: int):
         for r in selected[:MIN_COUNT]:
             f.write(f"{fmt_hostport(r.host, r.port)}\n")
 
-    # CSV (optionally gzipped)
-    csv_path = Path(OUTPUT_DIR) / (CSV_NAME + (".gz" if CSV_GZIP else ""))
-    header = ["host","port","proto","ok","latency_ms","thr_bps","mega_thr_bps","mega_ok_streams","mega_errors","score"]
-    if CSV_GZIP:
-        with gzip.open(csv_path, "wt", newline="", encoding="utf-8") as f:
-            w = csv.writer(f); w.writerow(header)
-            for r in results:
-                w.writerow([
-                    r.host, r.port, r.proto, int(r.ok),
-                    0 if r.latency_ms is None else round(r.latency_ms, 3),
-                    round(r.thr_bps, 1),
-                    round(r.mega_thr_bps, 1),
-                    r.mega_ok_streams,
-                    r.mega_errors,
-                    round(r.score, 3),
-                ])
-    else:
-        with csv_path.open("w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f); w.writerow(header)
-            for r in results:
-                w.writerow([
-                    r.host, r.port, r.proto, int(r.ok),
-                    0 if r.latency_ms is None else round(r.latency_ms, 3),
-                    round(r.thr_bps, 1),
-                    round(r.mega_thr_bps, 1),
-                    r.mega_ok_streams,
-                    r.mega_errors,
-                    round(r.score, 3),
-                ])
+    # CSV batch write unless streaming already did it
+    if os.environ.get("STREAM_CSV", "0") != "1":
+        csv_path = Path(OUTPUT_DIR) / (CSV_NAME + (".gz" if CSV_GZIP else ""))
+        header = ["host","port","proto","ok","latency_ms","thr_bps","mega_thr_bps","mega_ok_streams","mega_errors","score"]
+        meta = f"# profile={SPEED_PROFILE}, mega={int(MEGA_MODE)}, workers={WORKERS}, eff={EFFECTIVE_WORKERS}, http2={int(HTTP2)}"
+        if CSV_GZIP:
+            with gzip.open(csv_path, "wt", newline="", encoding="utf-8") as f:
+                f.write(meta + "\n")
+                w = csv.writer(f); w.writerow(header)
+                for r in results:
+                    w.writerow([
+                        r.host, r.port, r.proto, int(r.ok),
+                        0 if r.latency_ms is None else round(r.latency_ms, 3),
+                        round(r.thr_bps, 1),
+                        round(r.mega_thr_bps, 1),
+                        r.mega_ok_streams,
+                        r.mega_errors,
+                        round(r.score, 3),
+                    ])
+        else:
+            with csv_path.open("w", newline="", encoding="utf-8") as f:
+                f.write(meta + "\n")
+                w = csv.writer(f); w.writerow(header)
+                for r in results:
+                    w.writerow([
+                        r.host, r.port, r.proto, int(r.ok),
+                        0 if r.latency_ms is None else round(r.latency_ms, 3),
+                        round(r.thr_bps, 1),
+                        round(r.mega_thr_bps, 1),
+                        r.mega_ok_streams,
+                        r.mega_errors,
+                        round(r.score, 3),
+                    ])
 
     # TSV (debug/continuity)
     tsv_path = Path(OUTPUT_DIR) / TSV_NAME
@@ -612,7 +676,9 @@ def write_outputs(results: List["BenchResult"], duration_s: float, total: int):
         print(f"Median MEGA throughput: {median(mega_vals):.0f} B/s "
               f"(streams={MEGA_STREAMS}, bytes/stream={MEGA_BYTES_PER_STREAM})")
     print(f"Selected for MBProxies.txt: {min(MIN_COUNT, len(selected))}/{MIN_COUNT} (threshold {SCORE_THRESHOLD})")
-    print(f"Outputs: {all_path}, {mb_path}, {csv_path}, {tsv_path}")
+    print(f"Outputs: {all_path}, {mb_path}, "
+          f"{Path(OUTPUT_DIR) / (CSV_NAME + ('.gz' if CSV_GZIP else '')) if os.environ.get('STREAM_CSV','0')=='1' else Path(OUTPUT_DIR) / (CSV_NAME + ('.gz' if CSV_GZIP else ''))}, "
+          f"{tsv_path}")
 
 # ------------------------
 # Main
@@ -631,7 +697,6 @@ def main():
 
     if SHUFFLE_INPUT:
         try:
-            import random
             random.shuffle(items)
         except Exception:
             pass
