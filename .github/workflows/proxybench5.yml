@@ -1,0 +1,141 @@
+name: proxybench5
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_url:
+        description: "Download test URL"
+        required: false
+        default: "https://cachefly.cachefly.net/10mb.test"
+      min_count:
+        description: "Minimum proxies for MBProxies.txt"
+        required: false
+        default: "75"
+      score_threshold:
+        description: "Score threshold for MBProxies.txt"
+        required: false
+        default: "50.0"
+  schedule:
+    - cron: "17 */6 * * *"  # every 6h at :17 to avoid common cron syncs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proxybench5-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # Directories
+      INPUT_DIR: .
+      OUTPUT_DIR: Output
+
+      # Benchmark target
+      TEST_URL: ${{ github.event.inputs.test_url || 'https://cachefly.cachefly.net/10mb.test' }}
+
+      # CI tuning
+      WORKERS: "350"
+      PER_HOST_LIMIT: "32"
+
+      # Timeouts and sample sizes
+      CONNECT_TIMEOUT_S: "2.5"
+      READ_TIMEOUT_S: "3.0"
+      A_SAMPLE_BYTES: "32768"
+      B_SAMPLE_BYTES: "512000"
+      B_MAX_DURATION_S: "3.5"
+
+      # Scoring
+      THR_WEIGHT: "0.001"
+      LAT_PENALTY: "0.25"
+
+      # Selection policy
+      MIN_COUNT: ${{ github.event.inputs.min_count || '75' }}
+      SCORE_THRESHOLD: ${{ github.event.inputs.score_threshold || '50.0' }}
+
+      # Shuffle inputs to reduce correlation
+      SHUFFLE_INPUT: "1"
+
+      # Fail fast if no proxies present
+      REQUIRE_INPUTS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          # Use repo requirements if present. Otherwise install minimal runtime.
+          if ls requirements*.txt >/dev/null 2>&1; then
+            pip install -r requirements.txt || true
+            for f in requirements-*.txt; do
+              [ -f "$f" ] && pip install -r "$f" || true
+            done
+          fi
+          pip install "httpx[socks]" anyio
+
+      - name: Verify inputs
+        run: |
+          set -e
+          ls -l || true
+          FOUND=0
+          for f in socks4.txt http.txt socks5.txt; do
+            if [ -s "$f" ]; then
+              echo "Found $f ($(wc -l < "$f") lines)"
+              FOUND=1
+            fi
+          done
+          if [ "$REQUIRE_INPUTS" = "1" ] && [ "$FOUND" -eq 0 ]; then
+            echo "No input proxy lists found in $PWD (socks4.txt, http.txt, socks5.txt)."
+            exit 2
+          fi
+
+      # Optional: run getproxy.py if present to refresh lists
+      - name: Optional scrape (getproxy.py)
+        if: hashFiles('getproxy.py') != ''
+        run: |
+          python getproxy.py || echo "getproxy.py returned non-zero; continuing with existing lists"
+
+      - name: Run proxybench
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          python proxybench.py
+
+      - name: Summarize results
+        run: |
+          echo "=== Output contents ==="
+          ls -lah "$OUTPUT_DIR" || true
+          echo "Top 20:"
+          head -n 20 "$OUTPUT_DIR/MBProxiesAll.txt" || true
+          echo "Selected (MBProxies.txt):"
+          wc -l "$OUTPUT_DIR/MBProxies.txt" || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxybench5-${{ github.run_id }}
+          path: |
+            Output/MBProxiesAll.txt
+            Output/MBProxies.txt
+            Output/MBProxies.meta.tsv
+          if-no-files-found: warn
+          retention-days: 14
