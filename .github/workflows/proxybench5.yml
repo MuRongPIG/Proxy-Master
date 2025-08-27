@@ -91,7 +91,7 @@ jobs:
               [ -f "$f" ] && pip install -r "$f" || true
             done
           fi
-          pip install "httpx[socks]" anyio
+          pip install "httpx[socks]" anyio tqdm
 
       - name: Verify inputs
         run: |
