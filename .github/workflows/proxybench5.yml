@@ -15,8 +15,36 @@ on:
         description: "Score threshold for MBProxies.txt"
         required: false
         default: "50.0"
+      dedupe_cross_protocol:
+        description: "Deduplicate across protocols? (yes/no)"
+        required: false
+        default: "yes"
+      speed_profile:
+        description: "Speed profile (fast | balanced | slow)"
+        required: false
+        default: "fast"
+      max_starts_per_sec:
+        description: "Optional pacing cap (0 = off)"
+        required: false
+        default: "0"
+      a_retries:
+        description: "Stage-A retries (usually 1)"
+        required: false
+        default: "1"
+      b_retries:
+        description: "Stage-B retries (usually 0)"
+        required: false
+        default: "0"
+      csv_gzip:
+        description: "Gzip CSV artifact? (yes/no)"
+        required: false
+        default: "no"
+      skip_ipv6:
+        description: "Skip IPv6 proxies? (yes/no)"
+        required: false
+        default: "no"
   schedule:
-    - cron: "17 */6 * * *"  # every 6h at :17 to avoid common cron syncs
+    - cron: "17 */6 * * *"
 
 permissions:
   contents: read
@@ -30,36 +58,62 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      # Directories
+      # Paths
       INPUT_DIR: .
       OUTPUT_DIR: Output
 
-      # Benchmark target
+      # Target
       TEST_URL: ${{ github.event.inputs.test_url || 'https://cachefly.cachefly.net/10mb.test' }}
 
-      # CI tuning
-      WORKERS: "350"
-      PER_HOST_LIMIT: "32"
+      # Profiles and safety
+      SPEED_PROFILE: ${{ github.event.inputs.speed_profile || 'fast' }}
+      MAX_STARTS_PER_SEC: ${{ github.event.inputs.max_starts_per_sec || '0' }}
+      CSV_GZIP: ${{ github.event.inputs.csv_gzip && startsWith(toLower(github.event.inputs.csv_gzip), 'y') && '1' || '0' }}
+      SKIP_IPV6: ${{ github.event.inputs.skip_ipv6 && startsWith(toLower(github.event.inputs.skip_ipv6), 'y') && '1' || '0' }}
 
-      # Timeouts and sample sizes
+      # Core CI tuning (profile may override unless explicitly set via inputs/env)
+      WORKERS: "200"
+      PER_HOST_LIMIT: "24"
+
+      # Stage sizing and timeouts (profile may override)
       CONNECT_TIMEOUT_S: "2.5"
       READ_TIMEOUT_S: "3.0"
-      A_SAMPLE_BYTES: "32768"
-      B_SAMPLE_BYTES: "512000"
-      B_MAX_DURATION_S: "3.5"
+      A_SAMPLE_BYTES: "20480"
+      B_SAMPLE_BYTES: "384000"
+      B_MAX_DURATION_S: "3.0"
 
       # Scoring
       THR_WEIGHT: "0.001"
       LAT_PENALTY: "0.25"
+      ERR_PENALTY: "50.0"
 
       # Selection policy
       MIN_COUNT: ${{ github.event.inputs.min_count || '75' }}
       SCORE_THRESHOLD: ${{ github.event.inputs.score_threshold || '50.0' }}
 
-      # Shuffle inputs to reduce correlation
+      # Behavior
       SHUFFLE_INPUT: "1"
+      # Default yes unless the input starts with "n"
+      CROSS_PROTO_DEDUP: ${{ github.event.inputs.dedupe_cross_protocol && startsWith(toLower(github.event.inputs.dedupe_cross_protocol), 'n') != true && '1' || '0' }}
 
-      # Fail fast if no proxies present
+      # Retries and jitter (profile may override if you leave inputs blank)
+      A_RETRIES: ${{ github.event.inputs.a_retries || '1' }}
+      B_RETRIES: ${{ github.event.inputs.b_retries || '0' }}
+      QUICK_FAIL_S: "0.6"
+      JITTER_S: "0.05"
+      START_JITTER_S: "0.02"
+
+      # MEGA-mode defaults (SPEED_PROFILE may set these; not exposed as inputs to keep UX simple)
+      MEGA_STREAMS: "2"
+      MEGA_BYTES_PER_STREAM: "2097152"
+      MEGA_MAX_DURATION_S: "6.0"
+      MEGA_ONLY_HTTPS: "1"
+
+      # Filenames
+      CSV_NAME: "MBProxies.csv"
+      TSV_NAME: "MBProxies.meta.tsv"
+
+      # Fail if no inputs at all
       REQUIRE_INPUTS: "1"
 
     steps:
@@ -84,19 +138,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install -U pip
-          # Use repo requirements if present. Otherwise install minimal runtime.
           if ls requirements*.txt >/dev/null 2>&1; then
             pip install -r requirements.txt || true
-            for f in requirements-*.txt; do
-              [ -f "$f" ] && pip install -r "$f" || true
-            done
+            for f in requirements-*.txt; do [ -f "$f" ] && pip install -r "$f" || true; done
           fi
           pip install "httpx[socks]" anyio tqdm
 
       - name: Verify inputs
         run: |
           set -e
-          ls -l || true
           FOUND=0
           for f in socks4.txt http.txt socks5.txt; do
             if [ -s "$f" ]; then
@@ -105,17 +155,17 @@ jobs:
             fi
           done
           if [ "$REQUIRE_INPUTS" = "1" ] && [ "$FOUND" -eq 0 ]; then
-            echo "No input proxy lists found in $PWD (socks4.txt, http.txt, socks5.txt)."
+            echo "No input proxy lists found (socks4.txt, http.txt, socks5.txt)."
             exit 2
           fi
 
-      # Optional: run getproxy.py if present to refresh lists
       - name: Optional scrape (getproxy.py)
         if: hashFiles('getproxy.py') != ''
         run: |
-          python getproxy.py || echo "getproxy.py returned non-zero; continuing with existing lists"
+          echo "Running getproxy.py to refresh lists"
+          python getproxy.py || echo "getproxy.py non-zero exit; continuing with existing lists"
 
-      - name: Run proxybench
+      - name: Run proxybench (profile=${{ env.SPEED_PROFILE }})
         run: |
           mkdir -p "$OUTPUT_DIR"
           python proxybench.py
@@ -124,10 +174,13 @@ jobs:
         run: |
           echo "=== Output contents ==="
           ls -lah "$OUTPUT_DIR" || true
-          echo "Top 20:"
+          echo "Top 20 MBProxiesAll.txt:"
           head -n 20 "$OUTPUT_DIR/MBProxiesAll.txt" || true
-          echo "Selected (MBProxies.txt):"
+          echo "Count MBProxies.txt:"
           wc -l "$OUTPUT_DIR/MBProxies.txt" || true
+          echo "CSV preview:"
+          ls -l "$OUTPUT_DIR"/*.csv* || true
+          (ls "$OUTPUT_DIR/MBProxies.csv.gz" >/dev/null 2>&1 && zcat "$OUTPUT_DIR/MBProxies.csv.gz" | head -n 5) || (head -n 5 "$OUTPUT_DIR/MBProxies.csv" || true)
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -136,6 +189,8 @@ jobs:
           path: |
             Output/MBProxiesAll.txt
             Output/MBProxies.txt
+            Output/MBProxies.csv
+            Output/MBProxies.csv.gz
             Output/MBProxies.meta.tsv
           if-no-files-found: warn
           retention-days: 14
