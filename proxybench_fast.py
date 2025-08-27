@@ -1,42 +1,9 @@
 #!/usr/bin/env python3
-# proxybench_fast.py — stripped, fast proxy weed-out + light ranking
-#
-# Purpose:
-#   - Extremely fast CI pass to find working, low-latency, reasonably quick proxies.
-#   - No MEGA stage, no pacing, no gzip, no streaming CSV.
-#
-# Deps:
-#   pip install "httpx[socks]" tqdm
-#
-# Env (defaults tuned for speed):
-#   INPUT_DIR="."                 OUTPUT_DIR="Output"
-#   CONNECT_TIMEOUT_S="2.0"       READ_TIMEOUT_S="2.5"
-#   A_SAMPLE_BYTES="16384"        # tiny read for latency check (~16 KiB)
-#   B_SAMPLE_BYTES="256000"       # ~0.244 MiB cap
-#   B_MAX_DURATION_S="2.5"
-#   WORKERS="300"                 PER_HOST_LIMIT="32"
-#   THR_WEIGHT="0.001"            LAT_PENALTY="0.25"
-#   MIN_COUNT="75"                SCORE_THRESHOLD="40.0"
-#   SHUFFLE_INPUT="1"             CROSS_PROTO_DEDUP="1"
-#   CSV_NAME="MBProxies.csv"
-#   LATENCY_SKIP_MS="850"         # skip Stage-B if Stage-A is too slow
-#
-# Inputs:
-#   socks5.txt, http.txt (http+https proxies), socks4.txt in INPUT_DIR
-#
-# Outputs:
-#   Output/MBProxiesAll.txt (ranked working proxies: host:port)
-#   Output/MBProxies.txt (top N by score with threshold/backfill)
-#   Output/MBProxies.csv (all tested with metrics)
+# proxybench_fast.py — stripped, fast proxy weed-out + light ranking (fixed for httpx proxy usage)
 
-import asyncio
-import os
-import sys
-import time
+import asyncio, os, sys, time, ipaddress, csv
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List, Union, Iterable
-import ipaddress
-import csv
 from statistics import median
 from urllib.parse import quote
 
@@ -83,7 +50,7 @@ BROWSER_HEADERS = {
 }
 
 # ---------------- Helpers ----------------
-def parse_line(line: str) -> Optional[Tuple[str, int, Optional[str], Optional[str]]]:
+def parse_line(line: str):
     s = line.strip()
     if not s or s.startswith("#"): return None
     user = pw = None
@@ -157,10 +124,10 @@ def proxy_url_candidates(proto: str, host: str, port: int, user: Optional[str], 
     if user is not None:
         auth = f"{quote(user, safe='')}:{quote(pw or '', safe='')}@"
     if proto == "socks5":
-        return [f"socks5h://{auth}{host}:{port}"]  # remote DNS
+        return [f"socks5h://{auth}{host}:{port}"]
     if proto == "socks4":
         return [f"socks4://{auth}{host}:{port}"]
-    # http list can include HTTPS proxies; try both
+    # http list can include HTTPS proxies
     return [f"http://{auth}{host}:{port}", f"https://{auth}{host}:{port}"]
 
 def fmt_hostport(host: str, port: int) -> str:
@@ -177,53 +144,44 @@ class BenchResult:
         if self.latency_ms is None or self.thr_bps<=0: self.score=-1e9; return
         self.score=(self.thr_bps*THR_WEIGHT)-(self.latency_ms*LAT_PENALTY)
 
-async def stage_a(client: httpx.AsyncClient, proxies: Iterable[str]) -> Tuple[bool, Optional[float], Optional[str]]:
-    # Use two generic targets to avoid localized issues
-    urls = (
-        "https://cachefly.cachefly.net/1mb.test",
-        "https://speed.hetzner.de/1MB.bin",
-    )
-    for pxy in proxies:
-        for url in urls:
-            t0=time.perf_counter()
-            try:
-                async with client.stream(
-                    "GET", url,
-                    headers=BROWSER_HEADERS,
-                    timeout=httpx.Timeout(connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=CONNECT_TIMEOUT_S),
-                    proxies=pxy
-                ) as resp:
-                    if resp.status_code>=400: raise httpx.HTTPStatusError("bad status", request=resp.request, response=resp)
-                    total=0
-                    async for chunk in resp.aiter_bytes():
-                        total+=len(chunk)
-                        if total>=A_SAMPLE_BYTES:
-                            return True, (time.perf_counter()-t0)*1000.0, pxy
-            except Exception:
-                pass
+async def stage_a(proxy_url_list: Iterable[str]) -> Tuple[bool, Optional[float], Optional[str]]:
+    urls = ("https://cachefly.cachefly.net/1mb.test", "https://speed.hetzner.de/1MB.bin")
+    timeout = httpx.Timeout(connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=CONNECT_TIMEOUT_S)
+    for pxy in proxy_url_list:
+        # per-proxy client so the proxy is really used
+        async with httpx.AsyncClient(proxies=pxy, timeout=timeout, verify=True, trust_env=False, http2=False) as c:
+            for url in urls:
+                t0=time.perf_counter()
+                try:
+                    async with c.stream("GET", url, headers=BROWSER_HEADERS) as resp:
+                        if resp.status_code>=400: continue
+                        total=0
+                        async for chunk in resp.aiter_bytes():
+                            total+=len(chunk)
+                            if total>=A_SAMPLE_BYTES:
+                                return True, (time.perf_counter()-t0)*1000.0, pxy
+                except Exception:
+                    pass
     return False, None, None
 
-async def stage_b(client: httpx.AsyncClient, proxy: str) -> float:
+async def stage_b(pxy: str) -> float:
     url="https://cachefly.cachefly.net/10mb.test"
-    start=time.perf_counter(); got=0
-    try:
-        async with client.stream(
-            "GET", url,
-            headers=BROWSER_HEADERS,
-            timeout=httpx.Timeout(connect=CONNECT_TIMEOUT_S, read=B_MAX_DURATION_S+0.5, write=CONNECT_TIMEOUT_S),
-            proxies=proxy
-        ) as resp:
-            if resp.status_code>=400: return 0.0
-            async for chunk in resp.aiter_bytes():
-                got+=len(chunk)
-                if got>=B_SAMPLE_BYTES or (time.perf_counter()-start)>=B_MAX_DURATION_S:
-                    break
-    except Exception:
-        return 0.0
+    timeout = httpx.Timeout(connect=CONNECT_TIMEOUT_S, read=B_MAX_DURATION_S+0.5, write=CONNECT_TIMEOUT_S)
+    async with httpx.AsyncClient(proxies=pxy, timeout=timeout, verify=True, trust_env=False, http2=False) as c:
+        start=time.perf_counter(); got=0
+        try:
+            async with c.stream("GET", url, headers=BROWSER_HEADERS) as resp:
+                if resp.status_code>=400: return 0.0
+                async for chunk in resp.aiter_bytes():
+                    got+=len(chunk)
+                    if got>=B_SAMPLE_BYTES or (time.perf_counter()-start)>=B_MAX_DURATION_S:
+                        break
+        except Exception:
+            return 0.0
     dur=max(1e-6, time.perf_counter()-start)
     return got/dur
 
-async def worker(q: asyncio.Queue, out: List[BenchResult], client: httpx.AsyncClient, pbar: tqdm):
+async def worker(q: asyncio.Queue, out: List[BenchResult], pbar: tqdm):
     while True:
         item=await q.get()
         if item is None:
@@ -232,12 +190,12 @@ async def worker(q: asyncio.Queue, out: List[BenchResult], client: httpx.AsyncCl
         br=BenchResult(host,port,proto)
         candidates=proxy_url_candidates(proto,host,port,user,pw)
 
-        ok,lat,pxy=await stage_a(client,candidates)
+        ok,lat,pxy=await stage_a(candidates)
         if ok and lat is not None:
             br.latency_ms=lat
             thr=0.0
             if lat<=LATENCY_SKIP_MS:
-                thr=await stage_b(client,pxy)
+                thr=await stage_b(pxy)
             br.thr_bps=thr
             if thr>0:
                 br.ok=True
@@ -248,17 +206,15 @@ async def worker(q: asyncio.Queue, out: List[BenchResult], client: httpx.AsyncCl
 
 async def run(proxies: List[Tuple[str,int,str,Optional[str],Optional[str]]]) -> List[BenchResult]:
     results: List[BenchResult]=[]
-    limits=httpx.Limits(max_connections=WORKERS, max_keepalive_connections=PER_HOST_LIMIT)
-    async with httpx.AsyncClient(http2=False, limits=limits, verify=True, trust_env=False) as client:
-        q: asyncio.Queue=asyncio.Queue()
-        for host,port,proto,user,pw in proxies:
-            q.put_nowait((host,port,proto,user,pw))
-        for _ in range(WORKERS):
-            q.put_nowait(None)
-        with tqdm(total=len(proxies), desc="Fast bench", unit="proxy", mininterval=0.2) as pbar:
-            tasks=[asyncio.create_task(worker(q,results,client,pbar)) for _ in range(WORKERS)]
-            await q.join()
-            for t in tasks: await t
+    q: asyncio.Queue=asyncio.Queue()
+    for host,port,proto,user,pw in proxies:
+        q.put_nowait((host,port,proto,user,pw))
+    for _ in range(WORKERS):
+        q.put_nowait(None)
+    with tqdm(total=len(proxies), desc="Fast bench", unit="proxy", mininterval=0.2) as pbar:
+        tasks=[asyncio.create_task(worker(q,results,pbar)) for _ in range(WORKERS)]
+        await q.join()
+        for t in tasks: await t
     return results
 
 # --------------- Output ----------------
