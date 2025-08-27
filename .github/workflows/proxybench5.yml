@@ -68,8 +68,8 @@ jobs:
       # Profiles and safety
       SPEED_PROFILE: ${{ github.event.inputs.speed_profile || 'fast' }}
       MAX_STARTS_PER_SEC: ${{ github.event.inputs.max_starts_per_sec || '0' }}
-      CSV_GZIP: ${{ github.event.inputs.csv_gzip && startsWith(toLower(github.event.inputs.csv_gzip), 'y') && '1' || '0' }}
-      SKIP_IPV6: ${{ github.event.inputs.skip_ipv6 && startsWith(toLower(github.event.inputs.skip_ipv6), 'y') && '1' || '0' }}
+      CSV_GZIP: ${{ github.event.inputs.csv_gzip && (startsWith(github.event.inputs.csv_gzip, 'y') || startsWith(github.event.inputs.csv_gzip, 'Y')) && '1' || '0' }}
+      SKIP_IPV6: ${{ github.event.inputs.skip_ipv6 && (startsWith(github.event.inputs.skip_ipv6, 'y') || startsWith(github.event.inputs.skip_ipv6, 'Y')) && '1' || '0' }}
 
       # Core CI tuning (profile may override unless explicitly set via inputs/env)
       WORKERS: "200"
@@ -93,8 +93,8 @@ jobs:
 
       # Behavior
       SHUFFLE_INPUT: "1"
-      # Default yes unless the input starts with "n"
-      CROSS_PROTO_DEDUP: ${{ github.event.inputs.dedupe_cross_protocol && startsWith(toLower(github.event.inputs.dedupe_cross_protocol), 'n') != true && '1' || '0' }}
+      # Default yes unless the input starts with "n" (case-insensitive)
+      CROSS_PROTO_DEDUP: ${{ github.event.inputs.dedupe_cross_protocol && (startsWith(github.event.inputs.dedupe_cross_protocol, 'n') || startsWith(github.event.inputs.dedupe_cross_protocol, 'N')) != true && '1' || '0' }}
 
       # Retries and jitter (profile may override if you leave inputs blank)
       A_RETRIES: ${{ github.event.inputs.a_retries || '1' }}
