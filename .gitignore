@@ -144,3 +144,4 @@ dmypy.json
 
 # Benchmark outputs
 /Output/
+/Other/*.csv
