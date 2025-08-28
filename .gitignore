@@ -133,3 +133,14 @@ dmypy.json
 /test
 /.vscode
 
+# Generated proxy lists at repo root
+/http.txt
+/socks4.txt
+/socks5.txt
+/ProxyList.csv
+/MBProxies*.txt
+/*.csv
+/*.csv.gz
+
+# Benchmark outputs
+/Output/
